@@ -1,0 +1,17 @@
+[
+  {
+    "step": 1,
+    "event": "drive",
+    "description": "a black background with a white clock on it Landmark: none."
+  },
+  {
+    "step": 2,
+    "event": "turn_right",
+    "description": "the rome skyline from the top of the colosseum Landmark: car."
+  },
+  {
+    "step": 3,
+    "event": "stop",
+    "description": "the rome skyline from the car Landmark: car."
+  }
+]
