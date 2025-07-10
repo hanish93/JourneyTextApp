@@ -42,10 +42,13 @@ def train_blip2_on_new_data(training_data_dir, model_dir, device):
     print("[Train] Training complete.")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Train BLIP2 on new data.")
+    parser.add_argument('--training_data_dir', type=str, required=True, help='Path to the training data directory (should match video path given at trigger)')
+    parser.add_argument('--model_dir', type=str, default=os.path.join('JourneyText', 'models', 'blip2-opt-2.7b'), help='Path to the model directory')
+    args = parser.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    training_data_dir = os.path.join('JourneyText', 'training_data')
-    model_dir = os.path.join('JourneyText', 'models', 'blip2-opt-2.7b')
-    train_blip2_on_new_data(training_data_dir, model_dir, device)
+    train_blip2_on_new_data(args.training_data_dir, args.model_dir, device)
 
 if __name__ == "__main__":
     main()

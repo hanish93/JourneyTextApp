@@ -60,7 +60,8 @@ def run_pipeline(video_path, device=None):
 
     # 7. Save training data for this video
     from utils import save_training_data
-    save_training_data(video_path, frames, events, landmarks, captions)
+    training_data_dir = os.path.dirname(video_path)
+    save_training_data(training_data_dir, video_path, frames, events, landmarks, captions)
 
     # 8. Trigger model training after each new video
     print("[Pipeline] Training BLIP2 model on new data...")

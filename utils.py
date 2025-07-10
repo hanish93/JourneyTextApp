@@ -37,14 +37,14 @@ from PIL import Image
 import torch
 import json
 
-def save_training_data(video_path, frames, events, landmarks, captions):
+def save_training_data(training_data_dir, video_path, frames, events, landmarks, captions):
     """
     Save frames, events, landmarks, and captions for a video as training data.
     Frames are not saved as images to save space, but you can extend this to save images if needed.
     """
-    os.makedirs('training_data', exist_ok=True)
+    os.makedirs(training_data_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(video_path))[0]
-    out_json = os.path.join('training_data', base + '.json')
+    out_json = os.path.join(training_data_dir, base + '.json')
     data = {
         "video": video_path,
         "events": events,
