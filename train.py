@@ -43,8 +43,8 @@ def train_blip2_on_new_data(training_data_dir, model_dir, device):
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    training_data_dir = os.path.join('JourneyText', 'training_data')
-    model_dir = os.path.join('JourneyText', 'models', 'blip2-opt-2.7b')
+    training_data_dir = os.path.join('training_data')
+    model_dir = os.path.join('models', 'blip2-opt-2.7b')
     train_blip2_on_new_data(training_data_dir, model_dir, device)
 
 if __name__ == "__main__":
