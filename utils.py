@@ -109,7 +109,7 @@ def generate_captions(frames, device):
     Downloads and caches the model locally to avoid repeated downloads.
     """
     print(f"[BLIP2] Loading BLIP2 model on {device}...")
-    blip2_local_dir = os.path.join('JourneyText', 'models', 'blip2-opt-2.7b')
+    blip2_local_dir = os.path.join('models', 'blip2-opt-2.7b')
     # Check if the local directory exists and is non-empty
     if not os.path.exists(blip2_local_dir) or not os.listdir(blip2_local_dir):
         print(f"[BLIP2] Model not found locally. Downloading to {blip2_local_dir}...")
