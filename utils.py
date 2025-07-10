@@ -42,7 +42,7 @@ def save_training_data(video_path, frames, events, landmarks, captions):
     Save frames, events, landmarks, and captions for a video as training data.
     Frames are not saved as images to save space, but you can extend this to save images if needed.
     """
-    os.makedirs('JourneyText/training_data', exist_ok=True)
+    os.makedirs('/training_data', exist_ok=True)
     base = os.path.splitext(os.path.basename(video_path))[0]
     out_json = os.path.join('JourneyText', 'training_data', base + '.json')
     data = {
