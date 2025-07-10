@@ -146,51 +146,31 @@ def summarise_journey(events, landmarks, captions):
 
 def generate_long_summary(events, landmarks, captions):
     """
-    Generate a long-form narrative summary (200-1000 words) describing the journey.
-    Covers navigation, landmarks, road/traffic/weather, and overall impressions.
+    Generate a long-form narrative summary (200-1000 words) describing the journey using a language model.
+    Uses events, landmarks, captions, and other data to construct a prompt for the model.
     """
-    import random
-    from collections import Counter
-    # Gather unique landmarks and their counts
-    landmark_counts = Counter([l for l in landmarks if l and l != "none"])
-    unique_landmarks = list(landmark_counts.keys())
-    # Weather/road/traffic heuristics from captions
-    weather = "clear"
-    for c in captions:
-        if any(w in c.lower() for w in ["rain", "wet", "fog", "cloud", "snow"]):
-            weather = "uncertain"
-            break
-    # Compose the narrative
-    journey_intro = "The vehicle began its journey with the weather appearing {}. ".format(weather)
-    if unique_landmarks:
-        journey_intro += "Notable landmarks along the route included: {}. ".format(
-            ", ".join(unique_landmarks))
-    else:
-        journey_intro += "No major landmarks were detected along the way. "
-    journey_body = ""
-    for i, (event, landmark, caption) in enumerate(zip(events, landmarks, captions)):
-        step_desc = f"Step {i+1}: The vehicle "
-        if event == "drive":
-            step_desc += "proceeded forward"
-        elif event == "turn_right":
-            step_desc += "made a right turn"
-        elif event == "turn_left":
-            step_desc += "made a left turn"
-        elif event == "stop":
-            step_desc += "came to a stop"
-        else:
-            step_desc += event.replace("_", " ")
-        if landmark and landmark != "none":
-            step_desc += f" near the landmark '{landmark}'"
-        step_desc += f". Scene: {caption}. "
-        journey_body += step_desc
-    journey_end = "The journey concluded after {} steps, providing a comprehensive view of the route, its surroundings, and the conditions encountered along the way.".format(len(events))
-    # Combine and pad to at least 200 words if needed
-    full_summary = journey_intro + journey_body + journey_end
-    # Pad if too short
-    while len(full_summary.split()) < 200:
-        full_summary += " The vehicle continued its journey, observing the surroundings and adapting to the road conditions."
-    # Truncate if too long
-    if len(full_summary.split()) > 1000:
-        full_summary = " ".join(full_summary.split()[:1000]) + "..."
-    return full_summary
+    from transformers import pipeline
+    import os
+    import json
+
+    # Prepare the prompt
+    prompt = (
+        "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
+        "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. "
+        "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
+        f"Events: {json.dumps(events)}\n"
+        f"Landmarks: {json.dumps(landmarks)}\n"
+        f"Captions: {json.dumps(captions)}\n\n"
+        "Summary:"
+    )
+
+    # Use a local or pre-downloaded model for text generation (e.g., distilgpt2, gpt2, or a custom LLM)
+    # You can replace 'gpt2' with a more advanced model if available
+    generator = pipeline("text-generation", model=os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2"), device=-1)
+    output = generator(prompt, max_length=1024, do_sample=True, temperature=0.7, top_p=0.95, num_return_sequences=1)
+    summary = output[0]["generated_text"][len(prompt):].strip()
+    # Truncate to 1000 words if needed
+    words = summary.split()
+    if len(words) > 1000:
+        summary = " ".join(words[:1000]) + "..."
+    return summary
