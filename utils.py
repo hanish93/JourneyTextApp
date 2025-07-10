@@ -148,26 +148,57 @@ def generate_long_summary(events, landmarks, captions):
     """
     Generate a long-form narrative summary (200-1000 words) describing the journey using a language model.
     Uses events, landmarks, captions, and other data to construct a prompt for the model.
+    Handles model context window by truncating input if needed.
     """
-    from transformers import pipeline
+    from transformers import pipeline, AutoTokenizer
     import os
     import json
 
-    # Prepare the prompt
-    prompt = (
+    model_name = os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    max_context = getattr(tokenizer, 'model_max_length', 1024)
+    max_new_tokens = 256
+    # Reserve space for output tokens
+    max_prompt_tokens = max_context - max_new_tokens
+
+    # Prepare the prompt base
+    prompt_base = (
         "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
         "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. "
         "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
-        f"Events: {json.dumps(events)}\n"
-        f"Landmarks: {json.dumps(landmarks)}\n"
-        f"Captions: {json.dumps(captions)}\n\n"
-        "Summary:"
     )
 
-    # Use a local or pre-downloaded model for text generation (e.g., distilgpt2, gpt2, or a custom LLM)
-    # You can replace 'gpt2' with a more advanced model if available
-    generator = pipeline("text-generation", model=os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2"), device=-1)
-    output = generator(prompt, max_length=1024, do_sample=True, temperature=0.7, top_p=0.95, num_return_sequences=1)
+    # Truncate events, landmarks, captions to fit within max_prompt_tokens
+    def truncate_json_list(data, max_items):
+        if len(data) > max_items:
+            return data[:max_items] + ["..."]
+        return data
+
+    # Start with a reasonable guess, then shrink if needed
+    max_items = 10
+    while True:
+        prompt = (
+            prompt_base +
+            f"Events: {json.dumps(truncate_json_list(events, max_items))}\n"
+            f"Landmarks: {json.dumps(truncate_json_list(landmarks, max_items))}\n"
+            f"Captions: {json.dumps(truncate_json_list(captions, max_items))}\n\n"
+            "Summary:"
+        )
+        n_tokens = len(tokenizer.encode(prompt))
+        if n_tokens <= max_prompt_tokens or max_items == 1:
+            break
+        max_items -= 1
+
+    generator = pipeline("text-generation", model=model_name, device=-1)
+    output = generator(
+        prompt,
+        max_new_tokens=max_new_tokens,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.95,
+        num_return_sequences=1,
+        truncation=True
+    )
     summary = output[0]["generated_text"][len(prompt):].strip()
     # Truncate to 1000 words if needed
     words = summary.split()
