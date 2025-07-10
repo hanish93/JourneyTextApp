@@ -175,7 +175,7 @@ def generate_long_summary(events, landmarks, captions):
         return data
 
     # Start with a reasonable guess, then shrink if needed
-    max_items = 10
+    max_items = 50
     while True:
         prompt = (
             prompt_base +
@@ -189,12 +189,12 @@ def generate_long_summary(events, landmarks, captions):
             break
         max_items -= 1
 
-    generator = pipeline("text-generation", model=model_name, device=-1)
+    generator = pipeline("text-generation", model=model_name, device="cuda" if torch.cuda.is_available() else "cpu")
     output = generator(
         prompt,
         max_new_tokens=max_new_tokens,
         do_sample=True,
-        temperature=0.7,
+        temperature=1.0,
         top_p=0.95,
         num_return_sequences=1,
         truncation=True
