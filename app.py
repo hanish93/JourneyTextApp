@@ -51,8 +51,8 @@ def run_pipeline(video_path, device=None):
         "steps": summary,
         "long_summary": long_summary
     }
-    os.makedirs('JourneyText/outputs', exist_ok=True)
-    output_path = os.path.join('JourneyText/outputs', os.path.basename(video_path) + '_summary.json')
+    os.makedirs('outputs', exist_ok=True)
+    output_path = os.path.join('outputs', os.path.basename(video_path) + '_summary.json')
     with open(output_path, 'w') as f:
         import json
         json.dump(output_obj, f, indent=2)
@@ -66,5 +66,5 @@ def run_pipeline(video_path, device=None):
     # 8. Trigger model training after each new video
     print("[Pipeline] Training BLIP2 model on new data...")
     import subprocess
-    subprocess.run(["python", "JourneyText/train.py"])
+    subprocess.run(["python", "train.py"])
     print("[Pipeline] Model training complete.")
