@@ -66,5 +66,5 @@ def run_pipeline(video_path, device=None):
     # 8. Trigger model training after each new video
     print("[Pipeline] Training BLIP2 model on new data...")
     import subprocess
-    subprocess.run(["python", "train.py"])
+    subprocess.run(["python", "train.py", "--training_data_dir", training_data_dir, "--model_dir", "models/blip2-opt-2.7b"], check=True)
     print("[Pipeline] Model training complete.")

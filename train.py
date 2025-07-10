@@ -45,7 +45,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Train BLIP2 on new data.")
     parser.add_argument('--training_data_dir', type=str, required=True, help='Path to the training data directory (should match video path given at trigger)')
-    parser.add_argument('--model_dir', type=str, default=os.path.join('JourneyText', 'models', 'blip2-opt-2.7b'), help='Path to the model directory')
+    parser.add_argument('--model_dir', type=str, default=os.path.join('models', 'blip2-opt-2.7b'), help='Path to the model directory')
     args = parser.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     train_blip2_on_new_data(args.training_data_dir, args.model_dir, device)
