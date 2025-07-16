@@ -1,5 +1,8 @@
-import cv2
-import os
+import cv2, os, urllib.request
+from ultralytics import YOLO
+import torch
+import easyocr
+from tqdm import tqdm
 
 def extract_frames(video_path, fps=1):
     """
@@ -65,41 +68,41 @@ def get_blip2_model_and_processor(model_dir, device):
 
 def detect_landmarks(frames, device):
     """
-    Use YOLOv8 (Ultralytics) for object/landmark detection.
-    Returns a list of detected landmark names per frame.
+    Detect shop logos / signs using a fine‑grained YOLO model,
+    then run OCR on each detection to capture the actual text.
+    Returns a list of landmark strings per frame.
     """
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        raise ImportError("Please install ultralytics: pip install ultralytics")
-    model_path = os.path.join('JourneyText', 'models', 'yolov8n.pt')
+    # ---- 2.1  Load a logo‑aware weight -----------------------------
+    model_path = os.path.join('models', 'yolov8_logo.pt')
     if not os.path.exists(model_path):
-        # Download YOLOv8 nano weights if not present
-        import urllib.request
+        print("[YOLO] Downloading logo‑detection weights…")
+        url = "https://universe.roboflow.com/...",
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        url = 'https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt'
-        print(f"[YOLO] Downloading YOLOv8 weights to {model_path}...")
         urllib.request.urlretrieve(url, model_path)
-        print(f"[YOLO] Download complete.")
-    print(f"[YOLO] Loading YOLOv8 model on {device}...")
-    model = YOLO(model_path)
-    model.to(device)
-    print(f"[YOLO] Running inference on {len(frames)} frames (one by one to save memory)...")
+    model = YOLO(model_path).to(device)
+    reader = easyocr.Reader(['en'], gpu=device.startswith('cuda'))
+
     landmark_names = []
-    for idx, frame in enumerate(frames):
-        # Run YOLO on a single frame to avoid memory issues
+    print(f"[YOLO] Running detection on {len(frames)} frames…")
+    for idx, frame in enumerate(tqdm(frames, unit='frame')):
         results = model(frame, verbose=False)
         r = results[0]
-        if len(r.boxes) > 0:
-            # Get the class name of the most confident detection
-            cls_id = int(r.boxes.cls[0])
-            name = model.model.names[cls_id]
-            print(f"[YOLO] Frame {idx+1}: Detected {name}")
-            landmark_names.append(name)
-        else:
-            print(f"[YOLO] Frame {idx+1}: No landmark detected")
+
+        if len(r.boxes) == 0:
             landmark_names.append("none")
-    print(f"[YOLO] Landmark detection complete.")
+            continue
+
+        # ---- 2.2  Choose the highest‑confidence box ---------------
+        box = r.boxes[0]
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        cls_name = model.model.names[int(box.cls[0])]
+
+        # ---- 2.3  OCR on that crop --------------------------------
+        crop = frame[y1:y2, x1:x2]
+        ocr_txt = " ".join([t[1] for t in reader.readtext(crop)])
+        final_name = f"{cls_name} {ocr_txt}".strip()
+        landmark_names.append(final_name)
+
     return landmark_names
 
 def generate_captions(frames, device):
