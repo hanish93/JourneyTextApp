@@ -104,30 +104,40 @@ def get_blip2_model_and_processor(model_dir, device):
     return processor, model
 
 def detect_landmarks(frames, device):
-    model_path = os.path.join('models', 'yolov8_logo.pt')
-    if not os.path.exists(model_path):
-        url = "https://huggingface.co/roboflow/YOLOv8n-logo/resolve/main/yolov8n-logo.pt"
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        urllib.request.urlretrieve(url, model_path)
+    import os, urllib.request, cv2, easyocr
+    from ultralytics import YOLO
+    from tqdm import tqdm
+
+    logo_path = os.path.join("models", "yolov8_logo.pt")
+    coco_path = os.path.join("models", "yolov8n.pt")
+
+    if os.path.exists(logo_path):
+        model_path = logo_path
+    else:
+        model_path = coco_path
+        if not os.path.exists(model_path):
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt"
+            urllib.request.urlretrieve(url, model_path)
 
     model = YOLO(model_path).to(device)
-    reader = easyocr.Reader(['en'], gpu=device.startswith('cuda'))
+    reader = easyocr.Reader(["en"], gpu=device.startswith("cuda"))
 
-    landmark_names = []
-    for frame in tqdm(frames, unit='frame'):
-        results = model(frame, verbose=False)
-        r = results[0]
+    names = []
+    for frame in tqdm(frames, unit="frame"):
+        r = model(frame, verbose=False)[0]
         if len(r.boxes) == 0:
-            landmark_names.append("none")
+            names.append("none")
             continue
-        box = r.boxes[0]
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        cls_name = model.model.names[int(box.cls[0])]
+        b = r.boxes[0]
+        x1, y1, x2, y2 = map(int, b.xyxy[0])
+        cls = model.model.names[int(b.cls[0])]
         crop = frame[y1:y2, x1:x2]
-        ocr_txt = " ".join([t[1] for t in reader.readtext(crop)])
-        landmark_names.append(f"{cls_name} {ocr_txt}".strip())
+        txt = " ".join(t[1] for t in reader.readtext(crop))
+        names.append(f"{cls} {txt}".strip())
 
-    return landmark_names
+    return names
+
 
 # utils.py
 def generate_captions(frames, device, landmarks=None):
