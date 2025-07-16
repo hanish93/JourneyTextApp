@@ -34,7 +34,7 @@ def run_pipeline(video_path, device=None):
 
     # 4. Generate captions for each frame
     print(f"[Pipeline] Generating captions using BLIP2...")
-    captions = generate_captions(frames, device)
+    captions = generate_captions(frames, device, landmarks=landmarks)
     print(f"[Pipeline] Captions generated for {len(captions)} frames.")
 
     # 5. Summarise journey into structured JSON
