@@ -105,37 +105,43 @@ def detect_landmarks(frames, device):
 
     return landmark_names
 
-def generate_captions(frames, device):
+# utils.py
+def generate_captions(frames, device, landmarks=None):
     """
-    Use BLIP2 for image captioning.
-    Returns a list of captions per frame.
-    Downloads and caches the model locally to avoid repeated downloads.
+    Use BLIP‑2 to caption each frame.
+    If `landmarks` is supplied, prepend a text hint
+    (e.g., “Scene contains: Tesco logo”) so the model
+    is more likely to mention it.
     """
     print(f"[BLIP2] Loading BLIP2 model on {device}...")
     blip2_local_dir = os.path.join('models', 'blip2-opt-2.7b')
-    # Check if the local directory exists and is non-empty
-    if not os.path.exists(blip2_local_dir) or not os.listdir(blip2_local_dir):
-        print(f"[BLIP2] Model not found locally. Downloading to {blip2_local_dir}...")
-        processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b", cache_dir=blip2_local_dir)
-        model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b", cache_dir=blip2_local_dir).to(device)
-        print(f"[BLIP2] Download complete.")
-    else:
-        print(f"[BLIP2] Loading model from local directory {blip2_local_dir}.")
-        processor = Blip2Processor.from_pretrained(blip2_local_dir)
-        model = Blip2ForConditionalGeneration.from_pretrained(blip2_local_dir).to(device)
+    processor = Blip2Processor.from_pretrained(blip2_local_dir)
+    model      = Blip2ForConditionalGeneration.from_pretrained(blip2_local_dir).to(device)
+
     captions = []
-    print(f"[BLIP2] Generating captions for {len(frames)} frames...")
     for idx, frame in enumerate(frames):
-        # Convert OpenCV BGR to RGB and PIL Image
         img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        inputs = processor(images=img, return_tensors="pt").to(device)
+
+        # ---------- NEW LINES ----------
+        hint = ""
+        if landmarks and idx < len(landmarks):
+            hint = f"Scene contains: {landmarks[idx]}. "
+        # --------------------------------
+
+        prompt_inputs = processor(images=img,
+                                  text=hint,        # supply the hint
+                                  return_tensors="pt").to(device)
+
         with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=30)
-            caption = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+            ids = model.generate(**prompt_inputs, max_new_tokens=30)
+
+        caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
         captions.append(caption)
         print(f"[BLIP2] Frame {idx+1}: {caption}")
-    print(f"[BLIP2] Caption generation complete.")
+
+    print("[BLIP2] Caption generation complete.")
     return captions
+
 
 def summarise_journey(events, landmarks, captions):
     summary = []
