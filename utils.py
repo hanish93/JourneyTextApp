@@ -104,42 +104,28 @@ def get_blip2_model_and_processor(model_dir, device):
     return processor, model
 
 def detect_landmarks(frames, device):
-    """
-    Detect shop logos / signs using a fine‑grained YOLO model,
-    then run OCR on each detection to capture the actual text.
-    Returns a list of landmark strings per frame.
-    """
-    # ---- 2.1  Load a logo‑aware weight -----------------------------
-        model_path = os.path.join('models', 'yolov8_logo.pt')
+    model_path = os.path.join('models', 'yolov8_logo.pt')
     if not os.path.exists(model_path):
-        # --- FIX: use a real URL string, no trailing comma ----
         url = "https://huggingface.co/roboflow/YOLOv8n-logo/resolve/main/yolov8n-logo.pt"
-        print(f"[YOLO] Downloading logo‑detection weights from {url} …")
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         urllib.request.urlretrieve(url, model_path)
-        print("[YOLO] Download complete.")
 
+    model = YOLO(model_path).to(device)
+    reader = easyocr.Reader(['en'], gpu=device.startswith('cuda'))
 
     landmark_names = []
-    print(f"[YOLO] Running detection on {len(frames)} frames…")
-    for idx, frame in enumerate(tqdm(frames, unit='frame')):
+    for frame in tqdm(frames, unit='frame'):
         results = model(frame, verbose=False)
         r = results[0]
-
         if len(r.boxes) == 0:
             landmark_names.append("none")
             continue
-
-        # ---- 2.2  Choose the highest‑confidence box ---------------
         box = r.boxes[0]
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         cls_name = model.model.names[int(box.cls[0])]
-
-        # ---- 2.3  OCR on that crop --------------------------------
         crop = frame[y1:y2, x1:x2]
         ocr_txt = " ".join([t[1] for t in reader.readtext(crop)])
-        final_name = f"{cls_name} {ocr_txt}".strip()
-        landmark_names.append(final_name)
+        landmark_names.append(f"{cls_name} {ocr_txt}".strip())
 
     return landmark_names
 
