@@ -3,3 +3,6 @@ opencv-python
 transformers
 tqdm
 numpy
+ultralytics>=8.2.0
+easyocr>=1.7.1
+tqdm
