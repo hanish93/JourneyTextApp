@@ -25,14 +25,48 @@ def extract_frames(video_path, fps=1):
     print(f"[Frames] Extraction complete. Total frames: {len(frames)}")
     return frames
 
-def detect_events(frames):
+def detect_events(frames,
+                  stride: int = 1,
+                  dx_turn: float = 1.5,
+                  flow_stop: float = 0.20) -> list[str]:
     """
-    Detect events (e.g., drive, turn, stop) for each frame.
-    Placeholder: In a real implementation, use temporal models or heuristics.
+    Heuristic event detector using dense optical flow.
+
+    Returns one label per frame:
+    'drive' | 'turn_left' | 'turn_right' | 'stop'
     """
-    print(f"[Events] Detecting events for {len(frames)} frames...")
-    events = ["drive", "turn_right", "stop"][:len(frames)]
-    print(f"[Events] Events detected: {events}")
+    if len(frames) < 2:
+        return ["drive"] * len(frames)
+
+    gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+    events = ["drive"] * len(frames)
+    prev = gray_frames[0]
+
+    for i in range(1, len(gray_frames), stride):
+        flow = cv2.calcOpticalFlowFarneback(
+            prev, gray_frames[i],
+            None, 0.5, 3, 15, 3, 5, 1.2, 0
+        )
+
+        dx  = flow[..., 0].mean()                    # horizontal component
+        mag = np.linalg.norm(flow, axis=2).mean()    # total magnitude
+
+        if mag < flow_stop:
+            evt = "stop"
+        elif dx >  dx_turn:
+            evt = "turn_right"
+        elif dx < -dx_turn:
+            evt = "turn_left"
+        else:
+            evt = "drive"
+
+        # label this frame and the skipped ones (if stride > 1)
+        for k in range(stride):
+            idx = min(i - k, len(events) - 1)
+            events[idx] = evt
+
+        prev = gray_frames[i]
+
     return events
 
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
