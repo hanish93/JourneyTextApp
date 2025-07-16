@@ -110,14 +110,15 @@ def detect_landmarks(frames, device):
     Returns a list of landmark strings per frame.
     """
     # ---- 2.1  Load a logo‑aware weight -----------------------------
-    model_path = os.path.join('models', 'yolov8_logo.pt')
+        model_path = os.path.join('models', 'yolov8_logo.pt')
     if not os.path.exists(model_path):
-        print("[YOLO] Downloading logo‑detection weights…")
-        url = "https://universe.roboflow.com/...",
+        # --- FIX: use a real URL string, no trailing comma ----
+        url = "https://huggingface.co/roboflow/YOLOv8n-logo/resolve/main/yolov8n-logo.pt"
+        print(f"[YOLO] Downloading logo‑detection weights from {url} …")
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         urllib.request.urlretrieve(url, model_path)
-    model = YOLO(model_path).to(device)
-    reader = easyocr.Reader(['en'], gpu=device.startswith('cuda'))
+        print("[YOLO] Download complete.")
+
 
     landmark_names = []
     print(f"[YOLO] Running detection on {len(frames)} frames…")
