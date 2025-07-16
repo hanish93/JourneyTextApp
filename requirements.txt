@@ -2,7 +2,7 @@ torch
 opencv-python
 transformers
 tqdm
-numpy
+numpy>=1.26
 ultralytics>=8.2.0
 easyocr>=1.7.1
 tqdm
