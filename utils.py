@@ -3,6 +3,9 @@ from ultralytics import YOLO
 import torch
 import easyocr
 from tqdm import tqdm
+import numpy as np
+from PIL import Image
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
 def extract_frames(video_path, fps=1):
     """
