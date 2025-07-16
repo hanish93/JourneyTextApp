@@ -141,40 +141,31 @@ def detect_landmarks(frames, device):
 
 # utils.py
 def generate_captions(frames, device, landmarks=None):
-    """
-    Use BLIP‑2 to caption each frame.
-    If `landmarks` is supplied, prepend a text hint
-    (e.g., “Scene contains: Tesco logo”) so the model
-    is more likely to mention it.
-    """
-    print(f"[BLIP2] Loading BLIP2 model on {device}...")
-    blip2_local_dir = os.path.join('models', 'blip2-opt-2.7b')
-    processor = Blip2Processor.from_pretrained(blip2_local_dir)
-    model      = Blip2ForConditionalGeneration.from_pretrained(blip2_local_dir).to(device)
+    import os, shutil, cv2, torch
+    from PIL import Image
+    from transformers import Blip2Processor, Blip2ForConditionalGeneration
+
+    repo = "Salesforce/blip2-flan-t5-xl"
+    local_dir = os.path.join("models", repo.split("/")[-1])
+    if not os.path.exists(os.path.join(local_dir, "config.json")):
+        if os.path.isdir(local_dir):
+            shutil.rmtree(local_dir)
+        processor = Blip2Processor.from_pretrained(repo, cache_dir=local_dir)
+        model = Blip2ForConditionalGeneration.from_pretrained(repo, cache_dir=local_dir).to(device)
+    else:
+        processor = Blip2Processor.from_pretrained(local_dir)
+        model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
 
     captions = []
-    for idx, frame in enumerate(frames):
+    for i, frame in enumerate(frames):
         img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-        # ---------- NEW LINES ----------
-        hint = ""
-        if landmarks and idx < len(landmarks):
-            hint = f"Scene contains: {landmarks[idx]}. "
-        # --------------------------------
-
-        prompt_inputs = processor(images=img,
-                                  text=hint,        # supply the hint
-                                  return_tensors="pt").to(device)
-
+        hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
+        inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
         with torch.no_grad():
-            ids = model.generate(**prompt_inputs, max_new_tokens=30)
-
-        caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-        captions.append(caption)
-        print(f"[BLIP2] Frame {idx+1}: {caption}")
-
-    print("[BLIP2] Caption generation complete.")
+            ids = model.generate(**inputs, max_new_tokens=30)
+        captions.append(processor.batch_decode(ids, skip_special_tokens=True)[0].strip())
     return captions
+
 
 
 def summarise_journey(events, landmarks, captions):
