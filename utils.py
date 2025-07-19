@@ -377,6 +377,11 @@ def generate_long_summary(events, landmarks, captions):
     overlap_tokens = int(max_input_length * 0.2)  # 20% overlap
 
     def summarize_prompt(p):
+        # Always ensure prompt is within model's input length
+        tokens = tokenizer.encode(p)
+        if len(tokens) > max_input_length:
+            # Truncate at token level (last-resort, should rarely happen)
+            p = tokenizer.decode(tokens[:max_input_length])
         output = summarizer(p, max_length=256, min_length=100, do_sample=False)
         return output[0]['summary_text']
 
@@ -385,16 +390,14 @@ def generate_long_summary(events, landmarks, captions):
         i = 0
         while i < len(captions):
             chunk = []
-            token_count = 0
             j = i
             while j < len(captions):
                 test_chunk = chunk + [captions[j]]
                 prompt = format_summary_prompt(events[:10], cleaned_landmarks[:10], test_chunk)
                 tokens = tokenizer.encode(prompt)
-                if token_count + len(tokens) > max_tokens:
+                if len(tokens) > max_tokens:
                     break
                 chunk.append(captions[j])
-                token_count = len(tokens)
                 j += 1
             if not chunk:
                 # Fallback: force at least one caption per chunk
