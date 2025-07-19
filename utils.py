@@ -265,62 +265,67 @@ def summarise_journey(events, landmarks, captions):
 
 def generate_long_summary(events, landmarks, captions):
     """
-    Create a 250‑400‑word journey narrative.
-    Ensures the prompt never exceeds the model’s max positional length.
+    Generate a long-form journey summary (250-400 words) with improved legibility.
+    Cleans and filters captions, formats the prompt in natural language, and ensures prompt fits model context.
     """
-    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-    import os, json, torch
+    from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+    import os, re
 
-    # --- 1. choose an inexpensive LM (runs in 2‑3 GB VRAM) ------------
     repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
     cache_dir = os.path.join("models", repo.replace("/", "_"))
-    tok  = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
-    lm   = AutoModelForCausalLM.from_pretrained(repo, cache_dir=cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
+    model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=cache_dir)
+    summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=-1)
 
-    # model limit (Bart‑large‑cnn = 1024)
-    ctx_max      = getattr(lm.config, "max_position_embeddings", 1024)
-    out_tokens   = 256                         # we’ll ask for this many new tokens
-    prompt_limit = ctx_max - out_tokens
+    def clean_caption(caption):
+        caption = re.sub(r'[^\w\s.,!?-]', '', caption)
+        caption = re.sub(r'(\b\w+\b)(?:\s+\1\b)+', r'\1', caption)  # remove repeated words
+        caption = caption.strip()
+        if len(caption) < 8 or len(caption.split()) < 2:
+            return None
+        if len(set(caption.lower().split())) == 1:
+            return None
+        return caption
 
-    # --- 2. pack the JSON chunks, truncate until tokens fit ------------
-    base_hdr = (
-        "You are an expert journey summarizer. "
-        "Compose a vivid 250‑400‑word narrative of the route.\n\n"
+    # Clean and deduplicate captions
+    cleaned_captions = []
+    seen = set()
+    for c in captions:
+        cc = clean_caption(c)
+        if cc and cc not in seen:
+            cleaned_captions.append(cc)
+            seen.add(cc)
+    cleaned_captions = cleaned_captions[:10]
+
+    # Clean and deduplicate landmarks
+    cleaned_landmarks = []
+    seen_lm = set()
+    for l in landmarks:
+        l = l.strip()
+        if l and l not in seen_lm:
+            cleaned_landmarks.append(l)
+            seen_lm.add(l)
+    cleaned_landmarks = cleaned_landmarks[:10]
+
+    # Format prompt in a more readable way
+    prompt = (
+        "You are an expert journey summarizer. Write a detailed, engaging, and coherent long-form summary (250-400 words) describing the journey. "
+        "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
+        "Driving events: " + ', '.join(events[:10]) + ".\n"
+        "Notable landmarks: " + '; '.join(cleaned_landmarks) + ".\n"
+        "Scene highlights:\n- " + '\n- '.join(cleaned_captions) + "\n\nSummary:"
     )
 
-    def pack(ev, lmks, caps):
-        return (
-            base_hdr +
-            f"Events: {json.dumps(ev)}\n"
-            f"Landmarks: {json.dumps(lmks)}\n"
-            f"Captions: {json.dumps(caps)}\n\nSummary:"
-        )
+    # Truncate prompt if needed
+    max_input_length = tokenizer.model_max_length
+    prompt_tokens = tokenizer.encode(prompt)
+    if len(prompt_tokens) > max_input_length:
+        prompt = tokenizer.decode(prompt_tokens[:max_input_length])
 
-    ev, lmks, caps = events[:], landmarks[:], captions[:]
-    while True:
-        prompt = pack(ev, lmks, caps)
-        if len(tok(prompt).input_ids) <= prompt_limit:
-            break
-        # drop 10 % from the longest list until it fits
-        largest = max((len(ev), "ev"), (len(lmks), "lm"), (len(caps), "cap"))[1]
-        if   largest == "ev":  ev   = ev[ : max(1, int(len(ev)*0.9)) ]
-        elif largest == "lm":  lmks = lmks[: max(1, int(len(lmks)*0.9))]
-        else:                  caps = caps[: max(1, int(len(caps)*0.9))]
-
-    # --- 3. generate ---------------------------------------------------
-    device = 0 if torch.cuda.is_available() else -1
-    gen = pipeline("text-generation", model=lm, tokenizer=tok, device=device)
-    text = gen(
-        prompt,
-        max_new_tokens=out_tokens,
-        do_sample=True,
-        temperature=0.9,
-        top_p=0.9,
-        no_repeat_ngram_size=4,
-    )[0]["generated_text"]
-
-    summary = text[len(prompt):].strip()
-    # final safety trim to 1000 words
+    output = summarizer(prompt, max_length=256, min_length=100, do_sample=False, truncation=True)
+    summary = output[0]['summary_text']
     words = summary.split()
-    return " ".join(words[:1000]) + ("…" if len(words) > 1000 else "")
+    if len(words) > 1000:
+        summary = " ".join(words[:1000]) + "..."
+    return summary
 
