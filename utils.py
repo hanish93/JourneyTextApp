@@ -203,12 +203,38 @@ def generate_captions(frames, device, landmarks=None, events=None):
     for i, frame in enumerate(tqdm(frames, desc="[BLIP2] Generating captions", unit="frame")):
         try:
             img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            # Downscale image to max 512x512 for memory efficiency
+            max_dim = 512
+            if img.width > max_dim or img.height > max_dim:
+                img.thumbnail((max_dim, max_dim), Image.ANTIALIAS)
             hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
             inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
             with torch.no_grad():
                 ids = model.generate(**inputs, max_new_tokens=30)
             caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
             per_frame_captions.append(caption)
+            if device.startswith("cuda"):
+                import torch
+                torch.cuda.empty_cache()
+        except RuntimeError as e:
+            import torch
+            if "out of memory" in str(e) and device.startswith("cuda"):
+                print(f"[BLIP2] CUDA OOM at frame {i}, retrying on CPU...")
+                torch.cuda.empty_cache()
+                try:
+                    model_cpu = model.to("cpu")
+                    inputs_cpu = {k: v.to("cpu") for k, v in inputs.items()}
+                    with torch.no_grad():
+                        ids = model_cpu.generate(**inputs_cpu, max_new_tokens=30)
+                    caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+                    per_frame_captions.append(caption)
+                except Exception as e2:
+                    print(f"[BLIP2] Error on CPU for frame {i}: {e2}")
+                    per_frame_captions.append("")
+                model.to(device)  # Move back to original device
+            else:
+                print(f"[BLIP2] Error generating caption for frame {i}: {e}")
+                per_frame_captions.append("")
         except Exception as e:
             print(f"[BLIP2] Error generating caption for frame {i}: {e}")
             per_frame_captions.append("")
