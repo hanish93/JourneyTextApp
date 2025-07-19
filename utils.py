@@ -310,8 +310,10 @@ def generate_long_summary(events, landmarks, captions):
     # If prompt is still too long, chunk it
     def chunk_text(text, tokenizer, max_tokens):
         tokens = tokenizer.encode(text)
-        for i in range(0, len(tokens), max_tokens):
-            yield tokenizer.decode(tokens[i:i+max_tokens])
+        # Subtract 2 for special tokens (e.g., <s> and </s> for BART)
+        chunk_size = max_tokens - 2
+        for i in range(0, len(tokens), chunk_size):
+            yield tokenizer.decode(tokens[i:i+chunk_size])
 
     max_input_length = tokenizer.model_max_length
     prompt_tokens = tokenizer.encode(prompt)
@@ -319,14 +321,24 @@ def generate_long_summary(events, landmarks, captions):
         # Chunk the prompt and summarize each chunk
         summaries = []
         for chunk in chunk_text(prompt, tokenizer, max_input_length):
-            out = summarizer(chunk, max_length=256, min_length=100, do_sample=False)
+            chunk_tokens = tokenizer.encode(chunk)
+            if len(chunk_tokens) > max_input_length:
+                # Defensive: truncate chunk to max_input_length
+                chunk = tokenizer.decode(chunk_tokens[:max_input_length])
+            out = summarizer(chunk, max_length=256, min_length=100, do_sample=False, truncation=True)
             summaries.append(out[0]['summary_text'])
         # Final summary of summaries
         final_input = " ".join(summaries)
-        output = summarizer(final_input, max_length=256, min_length=100, do_sample=False)
+        final_tokens = tokenizer.encode(final_input)
+        if len(final_tokens) > max_input_length:
+            final_input = tokenizer.decode(final_tokens[:max_input_length])
+        output = summarizer(final_input, max_length=256, min_length=100, do_sample=False, truncation=True)
         summary = output[0]['summary_text']
     else:
-        output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
+        # Defensive: truncate prompt if needed
+        if len(prompt_tokens) > max_input_length:
+            prompt = tokenizer.decode(prompt_tokens[:max_input_length])
+        output = summarizer(prompt, max_length=256, min_length=100, do_sample=False, truncation=True)
         summary = output[0]['summary_text']
     words = summary.split()
     if len(words) > 1000:
