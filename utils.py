@@ -265,85 +265,62 @@ def summarise_journey(events, landmarks, captions):
 
 def generate_long_summary(events, landmarks, captions):
     """
-    Generate a long-form narrative summary (200-1000 words) describing the journey using a summarization model.
-    Uses events, landmarks, captions, and other data to construct a prompt for the model.
-    Handles model context window by chunking input if needed.
+    Create a 250‑400‑word journey narrative.
+    Ensures the prompt never exceeds the model’s max positional length.
     """
-    from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
-    import os
-    import json
+    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+    import os, json, torch
 
-    # Use a robust summarization model
-    repo = os.environ.get("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
-    local_dir = os.path.join("models", repo.replace("/", "_"))
-    tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
-    model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=local_dir)
-    # Force CPU for text generation to avoid CUDA errors
-    summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=-1)
-    if torch.cuda.is_available():
-        print("[LongSummary] Warning: CUDA is available but text generation is forced to run on CPU to avoid device-side errors.")
+    # --- 1. choose an inexpensive LM (runs in 2‑3 GB VRAM) ------------
+    repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
+    cache_dir = os.path.join("models", repo.replace("/", "_"))
+    tok  = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
+    lm   = AutoModelForCausalLM.from_pretrained(repo, cache_dir=cache_dir)
 
-    prompt_base = (
-        "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
-        "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. "
-        "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
+    # model limit (Bart‑large‑cnn = 1024)
+    ctx_max      = getattr(lm.config, "max_position_embeddings", 1024)
+    out_tokens   = 256                         # we’ll ask for this many new tokens
+    prompt_limit = ctx_max - out_tokens
+
+    # --- 2. pack the JSON chunks, truncate until tokens fit ------------
+    base_hdr = (
+        "You are an expert journey summarizer. "
+        "Compose a vivid 250‑400‑word narrative of the route.\n\n"
     )
 
-    def truncate_json_list(data, max_items):
-        if not isinstance(data, list):
-            data = [data]
-        if len(data) > max_items:
-            return data[:max_items] + ["..."]
-        return data
-
-    max_items = 50
-    while True:
-        prompt = (
-            prompt_base +
-            f"Events: {json.dumps(truncate_json_list(events, max_items))}\n"
-            f"Landmarks: {json.dumps(truncate_json_list(landmarks, max_items))}\n"
-            f"Captions: {json.dumps(truncate_json_list(captions, max_items))}\n\n"
-            "Summary:"
+    def pack(ev, lmks, caps):
+        return (
+            base_hdr +
+            f"Events: {json.dumps(ev)}\n"
+            f"Landmarks: {json.dumps(lmks)}\n"
+            f"Captions: {json.dumps(caps)}\n\nSummary:"
         )
-        n_tokens = len(tokenizer.encode(prompt))
-        if n_tokens <= tokenizer.model_max_length or max_items == 1:
+
+    ev, lmks, caps = events[:], landmarks[:], captions[:]
+    while True:
+        prompt = pack(ev, lmks, caps)
+        if len(tok(prompt).input_ids) <= prompt_limit:
             break
-        max_items -= 1
+        # drop 10 % from the longest list until it fits
+        largest = max((len(ev), "ev"), (len(lmks), "lm"), (len(caps), "cap"))[1]
+        if   largest == "ev":  ev   = ev[ : max(1, int(len(ev)*0.9)) ]
+        elif largest == "lm":  lmks = lmks[: max(1, int(len(lmks)*0.9))]
+        else:                  caps = caps[: max(1, int(len(caps)*0.9))]
 
-    # If prompt is still too long, chunk it
-    def chunk_text(text, tokenizer, max_tokens):
-        tokens = tokenizer.encode(text)
-        # Subtract 2 for special tokens (e.g., <s> and </s> for BART)
-        chunk_size = max_tokens - 2
-        for i in range(0, len(tokens), chunk_size):
-            yield tokenizer.decode(tokens[i:i+chunk_size])
+    # --- 3. generate ---------------------------------------------------
+    device = 0 if torch.cuda.is_available() else -1
+    gen = pipeline("text-generation", model=lm, tokenizer=tok, device=device)
+    text = gen(
+        prompt,
+        max_new_tokens=out_tokens,
+        do_sample=True,
+        temperature=0.9,
+        top_p=0.9,
+        no_repeat_ngram_size=4,
+    )[0]["generated_text"]
 
-    max_input_length = tokenizer.model_max_length
-    prompt_tokens = tokenizer.encode(prompt)
-    if len(prompt_tokens) > max_input_length:
-        # Chunk the prompt and summarize each chunk
-        summaries = []
-        for chunk in chunk_text(prompt, tokenizer, max_input_length):
-            chunk_tokens = tokenizer.encode(chunk)
-            if len(chunk_tokens) > max_input_length:
-                # Defensive: truncate chunk to max_input_length
-                chunk = tokenizer.decode(chunk_tokens[:max_input_length])
-            out = summarizer(chunk, max_length=256, min_length=100, do_sample=False, truncation=True)
-            summaries.append(out[0]['summary_text'])
-        # Final summary of summaries
-        final_input = " ".join(summaries)
-        final_tokens = tokenizer.encode(final_input)
-        if len(final_tokens) > max_input_length:
-            final_input = tokenizer.decode(final_tokens[:max_input_length])
-        output = summarizer(final_input, max_length=256, min_length=100, do_sample=False, truncation=True)
-        summary = output[0]['summary_text']
-    else:
-        # Defensive: truncate prompt if needed
-        if len(prompt_tokens) > max_input_length:
-            prompt = tokenizer.decode(prompt_tokens[:max_input_length])
-        output = summarizer(prompt, max_length=256, min_length=100, do_sample=False, truncation=True)
-        summary = output[0]['summary_text']
+    summary = text[len(prompt):].strip()
+    # final safety trim to 1000 words
     words = summary.split()
-    if len(words) > 1000:
-        summary = " ".join(words[:1000]) + "..."
-    return summary
+    return " ".join(words[:1000]) + ("…" if len(words) > 1000 else "")
+
