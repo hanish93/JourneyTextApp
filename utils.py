@@ -316,13 +316,13 @@ def generate_long_summary(events, landmarks, captions):
         "Scene highlights:\n- " + '\n- '.join(cleaned_captions) + "\n\nSummary:"
     )
 
-    # Truncate prompt if needed
-    max_input_length = tokenizer.model_max_length
+    # Truncate prompt to model's true max position embeddings
+    max_input_length = getattr(model.config, 'max_position_embeddings', 512)
     prompt_tokens = tokenizer.encode(prompt)
     if len(prompt_tokens) > max_input_length:
         prompt = tokenizer.decode(prompt_tokens[:max_input_length])
 
-    output = summarizer(prompt, max_length=256, min_length=100, do_sample=False, truncation=True)
+    output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
     summary = output[0]['summary_text']
     words = summary.split()
     if len(words) > 1000:
