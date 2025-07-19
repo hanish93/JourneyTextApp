@@ -356,7 +356,9 @@ def generate_long_summary(events, landmarks, captions):
     Generate a long-form journey summary (250-400 words) with improved legibility.
     Cleans and filters captions, formats the prompt in natural language, and ensures prompt fits model context.
     """
-    repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
+    # Use PEGASUS as default, but allow override via env var
+    repo = os.getenv("JOURNEY_SUMMARY_MODEL", "google/pegasus-xsum")
+    print(f"[Summary] Using summarization model: {repo}")
     cache_dir = os.path.join("models", repo.replace("/", "_"))
     tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=cache_dir)
