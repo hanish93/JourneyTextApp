@@ -7,26 +7,45 @@ import numpy as np
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration, BitsAndBytesConfig
 
-def extract_frames(video_path, fps=1):
+def extract_frames(video_path, fps=1, keyframe_threshold=0.1):
     """
     Extract frames from the input video at the specified FPS.
-    Returns a list of frames (as numpy arrays).
+    Returns a list of frames (as numpy arrays) and a list of booleans indicating keyframes.
+    A frame is considered a keyframe if the Mean Squared Error (MSE) between
+    it and the previous frame is above a certain threshold.
     """
     frames = []
+    is_keyframe = []
     cap = cv2.VideoCapture(video_path)
     frame_rate = cap.get(cv2.CAP_PROP_FPS) or 30
     count = 0
     success, image = cap.read()
+    prev_frame = None
     print(f"[Frames] Starting frame extraction...")
+
     while success:
         if int(count % round(frame_rate / fps)) == 0:
+            if prev_frame is not None:
+                # Calculate MSE between current and previous frame
+                mse = np.mean((image - prev_frame) ** 2)
+                if mse > keyframe_threshold:
+                    is_keyframe.append(True)
+                else:
+                    is_keyframe.append(False)
+            else:
+                # First frame is always a keyframe
+                is_keyframe.append(True)
+
             frames.append(image)
-            print(f"[Frames] Extracted frame {len(frames)}")
+            prev_frame = image
+            print(f"[Frames] Extracted frame {len(frames)} (Keyframe: {is_keyframe[-1]})")
+
         success, image = cap.read()
         count += 1
+
     cap.release()
-    print(f"[Frames] Extraction complete. Total frames: {len(frames)}")
-    return frames
+    print(f"[Frames] Extraction complete. Total frames: {len(frames)}, Keyframes: {sum(is_keyframe)}")
+    return frames, is_keyframe
 
 def detect_events(frames,
                   stride: int = 1,
@@ -130,7 +149,7 @@ def get_blip2_model_and_processor(model_dir, device):
     model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
     return processor, model
 
-def detect_landmarks(frames, device, conf_threshold=0.25):
+def detect_landmarks(frames, device, is_keyframe, conf_threshold=0.25):
     import os, urllib.request, cv2, easyocr
     from ultralytics import YOLO
     from tqdm import tqdm
@@ -152,37 +171,44 @@ def detect_landmarks(frames, device, conf_threshold=0.25):
 
     names = []
     for idx, frame in enumerate(tqdm(frames, unit="frame")):
-        if frame is None or not hasattr(frame, 'shape'):
-            print(f"[Landmark Detection] Warning: Frame {idx} is invalid or empty.")
-            names.append("none")
+        if not is_keyframe[idx]:
+            names.append("no_change")
             continue
-        r = model(frame, verbose=False, conf=conf_threshold)[0]
-        if len(r.boxes) == 0:
-            print(f"[Landmark Detection] No boxes detected in frame {idx}.")
-            names.append("none")
-            continue
-        # Collect all detected classes with confidence and OCR if possible
-        detected_info = []
-        for box in r.boxes:
-            cls = model.model.names[int(box.cls[0])]
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            crop = frame[y1:y2, x1:x2]
-            txt = " ".join(t[1] for t in reader.readtext(crop))
-            if txt:
-                detected_info.append(f"{cls} ({conf:.2f}) [{txt}]")
-            else:
-                detected_info.append(f"{cls} ({conf:.2f})")
-        detected_str = ", ".join(detected_info)
-        print(f"[Landmark Detection] Frame {idx} detected: {detected_str}")
-        names.append(detected_str if detected_str else "none")
+        try:
+            if frame is None or not hasattr(frame, 'shape'):
+                print(f"[Landmark Detection] Warning: Frame {idx} is invalid or empty.")
+                names.append("none")
+                continue
+            r = model(frame, verbose=False, conf=conf_threshold)[0]
+            if len(r.boxes) == 0:
+                print(f"[Landmark Detection] No boxes detected in frame {idx}.")
+                names.append("none")
+                continue
+            # Collect all detected classes with confidence and OCR if possible
+            detected_info = []
+            for box in r.boxes:
+                cls = model.model.names[int(box.cls[0])]
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                crop = frame[y1:y2, x1:x2]
+                txt = " ".join(t[1] for t in reader.readtext(crop))
+                if txt:
+                    detected_info.append(f"{cls} ({conf:.2f}) [{txt}]")
+                else:
+                    detected_info.append(f"{cls} ({conf:.2f})")
+            detected_str = ", ".join(detected_info)
+            print(f"[Landmark Detection] Frame {idx} detected: {detected_str}")
+            names.append(detected_str if detected_str else "none")
+        except Exception as e:
+            print(f"[Landmark Detection] Error processing frame {idx}: {e}")
+            names.append("error")
 
-    print(f"[Landmark Detection] Landmarks detected for {len([n for n in names if n != 'none'])} out of {len(frames)} frames.")
+    print(f"[Landmark Detection] Landmarks detected for {len([n for n in names if n not in ['none', 'no_change']])} out of {sum(is_keyframe)} keyframes.")
     return names
 
 
 # utils.py
-def generate_captions(frames, device, landmarks=None, events=None):
+def generate_captions(frames, device, landmarks=None, events=None, is_keyframe=None):
     """
     Generate a complete journey summary using the frames, landmarks, and events.
     This now returns a single narrative summary instead of per-frame captions.
@@ -191,6 +217,9 @@ def generate_captions(frames, device, landmarks=None, events=None):
     from PIL import Image
     from transformers import Blip2Processor, Blip2ForConditionalGeneration
     from tqdm import tqdm
+
+    if is_keyframe is None:
+        is_keyframe = [True] * len(frames)
 
     print(f"[BLIP2] Using device: {device}")
     repo = "Salesforce/blip2-flan-t5-xl"
@@ -208,13 +237,16 @@ def generate_captions(frames, device, landmarks=None, events=None):
 
     per_frame_captions = []
     for i, frame in enumerate(tqdm(frames, desc="[BLIP2] Generating captions", unit="frame")):
+        if not is_keyframe[i]:
+            per_frame_captions.append("no_change")
+            continue
         try:
             img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             # Downscale image to max 512x512 for memory efficiency
             max_dim = 512
             if img.width > max_dim or img.height > max_dim:
                 img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-            hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
+            hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) and landmarks[i] not in ["none", "no_change"] else ""
             inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
             with torch.no_grad():
                 ids = model.generate(**inputs, max_new_tokens=30)
@@ -237,14 +269,14 @@ def generate_captions(frames, device, landmarks=None, events=None):
                     per_frame_captions.append(caption)
                 except Exception as e2:
                     print(f"[BLIP2] Error on CPU for frame {i}: {e2}")
-                    per_frame_captions.append("")
+                    per_frame_captions.append("error")
                 model.to(device)  # Move back to original device
             else:
                 print(f"[BLIP2] Error generating caption for frame {i}: {e}")
-                per_frame_captions.append("")
+                per_frame_captions.append("error")
         except Exception as e:
             print(f"[BLIP2] Error generating caption for frame {i}: {e}")
-            per_frame_captions.append("")
+            per_frame_captions.append("error")
 
     if events is None:
         events = ["drive"] * len(frames)
@@ -254,67 +286,89 @@ def generate_captions(frames, device, landmarks=None, events=None):
 
 
 def summarise_journey(events, landmarks, captions):
+    """
+    Generate a step-by-step summary of the journey.
+    """
     summary = []
-    for i, (event, landmark, caption) in enumerate(zip(events, landmarks, captions)):
+    # Ensure all lists have the same length to avoid IndexError
+    min_len = min(len(events), len(landmarks), len(captions))
+    if min_len == 0:
+        return []
+
+    for i in range(min_len):
+        event = events[i]
+        landmark = landmarks[i]
+        caption = captions[i]
+
+        # Skip entries where an error occurred during processing
+        if "error" in [event, landmark, caption] or "no_change" in [event, landmark, caption]:
+            continue
+
         summary.append({
-            "step": i+1,
+            "step": i + 1,
             "event": event,
             "description": f"{caption} Landmark: {landmark}."
         })
     return summary
+
+import re
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+
+def clean_caption(caption):
+    """Clean a single caption string."""
+    if not caption or caption in ["error", "no_change"]:
+        return None
+    caption = re.sub(r'[^\w\s.,!?-]', '', caption)
+    caption = re.sub(r'(\b\w+\b)(?:\s+\1\b)+', r'\1', caption)  # remove repeated words
+    caption = caption.strip()
+    if len(caption) < 8 or len(caption.split()) < 2:
+        return None
+    if len(set(caption.lower().split())) == 1:
+        return None
+    return caption
+
+def clean_landmarks(landmarks):
+    """Clean and deduplicate a list of landmark strings."""
+    cleaned_landmarks = []
+    seen_lm = set()
+    for l in landmarks:
+        if not l or l in ["error", "none", "no_change"]:
+            continue
+        l = l.strip()
+        if l and l not in seen_lm:
+            cleaned_landmarks.append(l)
+            seen_lm.add(l)
+    return cleaned_landmarks
+
+def format_summary_prompt(events, landmarks, captions):
+    """Format the prompt for the summarization model."""
+    prompt = (
+        "You are an expert journey summarizer. Write a detailed, engaging, and coherent long-form summary (250-400 words) describing the journey. "
+        "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
+        "Driving events: " + ', '.join(events[:10]) + ".\n"
+        "Notable landmarks: " + '; '.join(landmarks) + ".\n"
+        "Scene highlights:\n- " + '\n- '.join(captions) + "\n\nSummary:"
+    )
+    return prompt
 
 def generate_long_summary(events, landmarks, captions):
     """
     Generate a long-form journey summary (250-400 words) with improved legibility.
     Cleans and filters captions, formats the prompt in natural language, and ensures prompt fits model context.
     """
-    from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
-    import os, re
-
     repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
     cache_dir = os.path.join("models", repo.replace("/", "_"))
     tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=cache_dir)
     summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=-1)
 
-    def clean_caption(caption):
-        caption = re.sub(r'[^\w\s.,!?-]', '', caption)
-        caption = re.sub(r'(\b\w+\b)(?:\s+\1\b)+', r'\1', caption)  # remove repeated words
-        caption = caption.strip()
-        if len(caption) < 8 or len(caption.split()) < 2:
-            return None
-        if len(set(caption.lower().split())) == 1:
-            return None
-        return caption
+    cleaned_captions = [c for c in [clean_caption(c) for c in captions] if c]
+    if not cleaned_captions:
+        return "Could not generate a summary due to a lack of valid captions."
 
-    # Clean and deduplicate captions
-    cleaned_captions = []
-    seen = set()
-    for c in captions:
-        cc = clean_caption(c)
-        if cc and cc not in seen:
-            cleaned_captions.append(cc)
-            seen.add(cc)
-    cleaned_captions = cleaned_captions[:10]
+    cleaned_landmarks = clean_landmarks(landmarks)
 
-    # Clean and deduplicate landmarks
-    cleaned_landmarks = []
-    seen_lm = set()
-    for l in landmarks:
-        l = l.strip()
-        if l and l not in seen_lm:
-            cleaned_landmarks.append(l)
-            seen_lm.add(l)
-    cleaned_landmarks = cleaned_landmarks[:10]
-
-    # Format prompt in a more readable way
-    prompt = (
-        "You are an expert journey summarizer. Write a detailed, engaging, and coherent long-form summary (250-400 words) describing the journey. "
-        "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
-        "Driving events: " + ', '.join(events[:10]) + ".\n"
-        "Notable landmarks: " + '; '.join(cleaned_landmarks) + ".\n"
-        "Scene highlights:\n- " + '\n- '.join(cleaned_captions) + "\n\nSummary:"
-    )
+    prompt = format_summary_prompt(events, cleaned_landmarks[:10], cleaned_captions[:10])
 
     # Truncate prompt to model's true max position embeddings
     max_input_length = getattr(model.config, 'max_position_embeddings', 512)
@@ -322,13 +376,14 @@ def generate_long_summary(events, landmarks, captions):
     if len(prompt_tokens) > max_input_length:
         prompt = tokenizer.decode(prompt_tokens[:max_input_length])
 
-    # Debug: print prompt token length
-    # print(f"[DEBUG] Prompt token length: {len(prompt_tokens)} / {max_input_length}")
-
-    output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
-    summary = output[0]['summary_text']
-    words = summary.split()
-    if len(words) > 1000:
-        summary = " ".join(words[:1000]) + "..."
-    return summary
+    try:
+        output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
+        summary = output[0]['summary_text']
+        words = summary.split()
+        if len(words) > 1000:
+            summary = " ".join(words[:1000]) + "..."
+        return summary
+    except Exception as e:
+        print(f"[Summary] Error during summarization: {e}")
+        return "Could not generate a summary due to an error."
 
