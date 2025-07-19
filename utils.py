@@ -38,6 +38,7 @@ def detect_events(frames,
     Returns one label per frame:
     'drive' | 'turn_left' | 'turn_right' | 'stop'
     """
+    from tqdm import tqdm
     if len(frames) < 2:
         return ["drive"] * len(frames)
 
@@ -45,30 +46,34 @@ def detect_events(frames,
     events = ["drive"] * len(frames)
     prev = gray_frames[0]
 
-    for i in range(1, len(gray_frames), stride):
-        flow = cv2.calcOpticalFlowFarneback(
-            prev, gray_frames[i],
-            None, 0.5, 3, 15, 3, 5, 1.2, 0
-        )
+    for i in tqdm(range(1, len(gray_frames), stride), desc="[Events] Detecting", unit="frame"):
+        try:
+            flow = cv2.calcOpticalFlowFarneback(
+                prev, gray_frames[i],
+                None, 0.5, 3, 15, 3, 5, 1.2, 0
+            )
 
-        dx  = flow[..., 0].mean()                    # horizontal component
-        mag = np.linalg.norm(flow, axis=2).mean()    # total magnitude
+            dx  = flow[..., 0].mean()                    # horizontal component
+            mag = np.linalg.norm(flow, axis=2).mean()    # total magnitude
 
-        if mag < flow_stop:
-            evt = "stop"
-        elif dx >  dx_turn:
-            evt = "turn_right"
-        elif dx < -dx_turn:
-            evt = "turn_left"
-        else:
-            evt = "drive"
+            if mag < flow_stop:
+                evt = "stop"
+            elif dx >  dx_turn:
+                evt = "turn_right"
+            elif dx < -dx_turn:
+                evt = "turn_left"
+            else:
+                evt = "drive"
 
-        # label this frame and the skipped ones (if stride > 1)
-        for k in range(stride):
-            idx = min(i - k, len(events) - 1)
-            events[idx] = evt
+            # label this frame and the skipped ones (if stride > 1)
+            for k in range(stride):
+                idx = min(i - k, len(events) - 1)
+                events[idx] = evt
 
-        prev = gray_frames[i]
+            prev = gray_frames[i]
+        except Exception as e:
+            print(f"[Events] Error processing frame {i}: {e}")
+            continue
 
     return events
 
