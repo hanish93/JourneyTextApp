@@ -196,8 +196,13 @@ def generate_captions(frames, device, landmarks=None, events=None):
     repo = "Salesforce/blip2-flan-t5-xl"
     model_id = get_or_download_model(repo, None, hf_repo=repo)
     processor = Blip2Processor.from_pretrained(model_id, use_fast=True)
-    model = Blip2ForConditionalGeneration.from_pretrained(model_id).to(device)
-    model.eval()
+    from transformers import BitsAndBytesConfig
+    bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+    model = Blip2ForConditionalGeneration.from_pretrained(
+        model_id,
+        quantization_config=bnb_cfg,
+        device_map={"": device},
+    ).eval()
 
     per_frame_captions = []
     for i, frame in enumerate(tqdm(frames, desc="[BLIP2] Generating captions", unit="frame")):
@@ -206,7 +211,12 @@ def generate_captions(frames, device, landmarks=None, events=None):
             # Downscale image to max 512x512 for memory efficiency
             max_dim = 512
             if img.width > max_dim or img.height > max_dim:
-                img.thumbnail((max_dim, max_dim), Image.ANTIALIAS)
+                resample = (
+                    Image.Resampling.LANCZOS
+                    if hasattr(Image, "Resampling")
+                    else Image.LANCZOS
+                )
+                img.thumbnail((max_dim, max_dim), resample)
             hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
             inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
             with torch.no_grad():
@@ -262,34 +272,29 @@ def generate_long_summary(events, landmarks, captions):
     Uses events, landmarks, captions, and other data to construct a prompt for the model.
     Handles model context window by truncating input if needed.
     """
-    from transformers import pipeline, AutoTokenizer
+    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
     import os
     import json
 
-    model_name = os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2")
-    local_dir = os.path.join("models", model_name.replace("/", "_"))
-    if not os.path.exists(local_dir):
-        AutoTokenizer.from_pretrained(model_name, cache_dir=local_dir)
-    tokenizer = AutoTokenizer.from_pretrained(local_dir)
+    repo = os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2")
+    local_dir = os.path.join("models", repo.replace("/", "_"))
+    tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
+    model = AutoModelForCausalLM.from_pretrained(repo, cache_dir=local_dir)
     max_context = getattr(tokenizer, 'model_max_length', 1024)
     max_new_tokens = 256
-    # Reserve space for output tokens
     max_prompt_tokens = max_context - max_new_tokens
 
-    # Prepare the prompt base
     prompt_base = (
         "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
         "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. "
         "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
     )
 
-    # Truncate events, landmarks, captions to fit within max_prompt_tokens
     def truncate_json_list(data, max_items):
         if len(data) > max_items:
             return data[:max_items] + ["..."]
         return data
 
-    # Start with a reasonable guess, then shrink if needed
     max_items = 50
     while True:
         prompt = (
@@ -304,7 +309,12 @@ def generate_long_summary(events, landmarks, captions):
             break
         max_items -= 1
 
-    generator = pipeline("text-generation", model=model_name, device="cuda" if torch.cuda.is_available() else "cpu")
+    generator = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=0 if torch.cuda.is_available() else -1
+    )
     output = generator(
         prompt,
         max_new_tokens=max_new_tokens,
@@ -315,7 +325,6 @@ def generate_long_summary(events, landmarks, captions):
         truncation=True
     )
     summary = output[0]["generated_text"][len(prompt):].strip()
-    # Truncate to 1000 words if needed
     words = summary.split()
     if len(words) > 1000:
         summary = " ".join(words[:1000]) + "..."
