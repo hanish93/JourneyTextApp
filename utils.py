@@ -265,21 +265,20 @@ def summarise_journey(events, landmarks, captions):
 
 def generate_long_summary(events, landmarks, captions):
     """
-    Generate a long-form narrative summary (200-1000 words) describing the journey using a language model.
+    Generate a long-form narrative summary (200-1000 words) describing the journey using a summarization model.
     Uses events, landmarks, captions, and other data to construct a prompt for the model.
-    Handles model context window by truncating input if needed.
+    Handles model context window by chunking input if needed.
     """
-    from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+    from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
     import os
     import json
 
-    repo = os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2")
+    # Use a robust summarization model
+    repo = os.environ.get("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
     local_dir = os.path.join("models", repo.replace("/", "_"))
     tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
-    model = AutoModelForCausalLM.from_pretrained(repo, cache_dir=local_dir)
-    max_context = getattr(tokenizer, 'model_max_length', 1024)
-    max_new_tokens = 256
-    max_prompt_tokens = max_context - max_new_tokens
+    model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=local_dir)
+    summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=0 if torch.cuda.is_available() else -1)
 
     prompt_base = (
         "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
@@ -304,38 +303,32 @@ def generate_long_summary(events, landmarks, captions):
             "Summary:"
         )
         n_tokens = len(tokenizer.encode(prompt))
-        if n_tokens <= max_prompt_tokens or max_items == 1:
+        if n_tokens <= tokenizer.model_max_length or max_items == 1:
             break
         max_items -= 1
 
-    generator = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device=0 if torch.cuda.is_available() else -1
-    )
-    try:
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("Prompt for text generation is empty or invalid.")
-        if len(tokenizer.encode(prompt)) > max_context:
-            print(f"[LongSummary] Warning: Prompt length ({len(tokenizer.encode(prompt))}) exceeds model context window ({max_context}). Truncating.")
-            prompt = tokenizer.decode(tokenizer.encode(prompt)[:max_context])
-        output = generator(
-            prompt,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=1.0,
-            top_p=0.95,
-            num_return_sequences=1,
-            truncation=True
-        )
-        summary = output[0]["generated_text"][len(prompt):].strip()
-        words = summary.split()
-        if len(words) > 1000:
-            summary = " ".join(words[:1000]) + "..."
-        return summary
-    except Exception as e:
-        print(f"[LongSummary] Generation failed: {e}")
-        print(f"[LongSummary] Prompt length: {len(prompt)}")
-        print(f"[LongSummary] Prompt sample: {prompt[:500]}...")
-        raise
+    # If prompt is still too long, chunk it
+    def chunk_text(text, tokenizer, max_tokens):
+        tokens = tokenizer.encode(text)
+        for i in range(0, len(tokens), max_tokens):
+            yield tokenizer.decode(tokens[i:i+max_tokens])
+
+    max_input_length = tokenizer.model_max_length
+    prompt_tokens = tokenizer.encode(prompt)
+    if len(prompt_tokens) > max_input_length:
+        # Chunk the prompt and summarize each chunk
+        summaries = []
+        for chunk in chunk_text(prompt, tokenizer, max_input_length):
+            out = summarizer(chunk, max_length=256, min_length=100, do_sample=False)
+            summaries.append(out[0]['summary_text'])
+        # Final summary of summaries
+        final_input = " ".join(summaries)
+        output = summarizer(final_input, max_length=256, min_length=100, do_sample=False)
+        summary = output[0]['summary_text']
+    else:
+        output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
+        summary = output[0]['summary_text']
+    words = summary.split()
+    if len(words) > 1000:
+        summary = " ".join(words[:1000]) + "..."
+    return summary
