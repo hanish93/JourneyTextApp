@@ -314,17 +314,28 @@ def generate_long_summary(events, landmarks, captions):
         tokenizer=tokenizer,
         device=0 if torch.cuda.is_available() else -1
     )
-    output = generator(
-        prompt,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=1.0,
-        top_p=0.95,
-        num_return_sequences=1,
-        truncation=True
-    )
-    summary = output[0]["generated_text"][len(prompt):].strip()
-    words = summary.split()
-    if len(words) > 1000:
-        summary = " ".join(words[:1000]) + "..."
-    return summary
+    try:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("Prompt for text generation is empty or invalid.")
+        if len(tokenizer.encode(prompt)) > max_context:
+            print(f"[LongSummary] Warning: Prompt length ({len(tokenizer.encode(prompt))}) exceeds model context window ({max_context}). Truncating.")
+            prompt = tokenizer.decode(tokenizer.encode(prompt)[:max_context])
+        output = generator(
+            prompt,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=1.0,
+            top_p=0.95,
+            num_return_sequences=1,
+            truncation=True
+        )
+        summary = output[0]["generated_text"][len(prompt):].strip()
+        words = summary.split()
+        if len(words) > 1000:
+            summary = " ".join(words[:1000]) + "..."
+        return summary
+    except Exception as e:
+        print(f"[LongSummary] Generation failed: {e}")
+        print(f"[LongSummary] Prompt length: {len(prompt)}")
+        print(f"[LongSummary] Prompt sample: {prompt[:500]}...")
+        raise
