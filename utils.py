@@ -81,8 +81,11 @@ import shutil
 def get_or_download_model(model_name, local_dir, download_url=None, hf_repo=None, config_file="config.json"):
     """
     Checks if a model exists locally. If not, downloads it (from URL or HuggingFace repo).
-    Returns the local directory path to the model.
+    Returns the local directory path to the model, or the HuggingFace repo name if using HuggingFace.
     """
+    if hf_repo:
+        # For HuggingFace models, just return the repo name and let transformers manage the cache
+        return hf_repo
     if not os.path.exists(local_dir):
         os.makedirs(local_dir, exist_ok=True)
     config_path = os.path.join(local_dir, config_file)
@@ -91,12 +94,6 @@ def get_or_download_model(model_name, local_dir, download_url=None, hf_repo=None
             # Download from direct URL
             print(f"[Model] Downloading model from {download_url} to {local_dir}")
             urllib.request.urlretrieve(download_url, os.path.join(local_dir, os.path.basename(download_url)))
-        elif hf_repo:
-            # Download from HuggingFace repo
-            print(f"[Model] Downloading HuggingFace model {hf_repo} to {local_dir}")
-            # Do NOT delete the directory; let HuggingFace manage the cache
-            _ = Blip2Processor.from_pretrained(hf_repo, cache_dir=local_dir)
-            _ = Blip2ForConditionalGeneration.from_pretrained(hf_repo, cache_dir=local_dir)
     return local_dir
 
 def save_training_data(training_data_dir, video_path, frames, events, landmarks, captions):
@@ -182,10 +179,9 @@ def generate_captions(frames, device, landmarks=None, events=None):
     from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
     repo = "Salesforce/blip2-flan-t5-xl"
-    local_dir = os.path.join("models", repo.split("/")[-1])
-    local_dir = get_or_download_model(repo, local_dir, hf_repo=repo)
-    processor = Blip2Processor.from_pretrained(local_dir)
-    model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
+    model_id = get_or_download_model(repo, None, hf_repo=repo)
+    processor = Blip2Processor.from_pretrained(model_id)
+    model = Blip2ForConditionalGeneration.from_pretrained(model_id).to(device)
 
     per_frame_captions = []
     for i, frame in enumerate(frames):
