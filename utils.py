@@ -322,6 +322,9 @@ def generate_long_summary(events, landmarks, captions):
     if len(prompt_tokens) > max_input_length:
         prompt = tokenizer.decode(prompt_tokens[:max_input_length])
 
+    # Debug: print prompt token length
+    # print(f"[DEBUG] Prompt token length: {len(prompt_tokens)} / {max_input_length}")
+
     output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
     summary = output[0]['summary_text']
     words = summary.split()
