@@ -125,7 +125,7 @@ def get_blip2_model_and_processor(model_dir, device):
     model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
     return processor, model
 
-def detect_landmarks(frames, device):
+def detect_landmarks(frames, device, conf_threshold=0.25):
     import os, urllib.request, cv2, easyocr
     from ultralytics import YOLO
     from tqdm import tqdm
@@ -151,14 +151,18 @@ def detect_landmarks(frames, device):
             print(f"[Landmark Detection] Warning: Frame {idx} is invalid or empty.")
             names.append("none")
             continue
-        r = model(frame, verbose=False)[0]
+        r = model(frame, verbose=False, conf=conf_threshold)[0]
         if len(r.boxes) == 0:
             print(f"[Landmark Detection] No boxes detected in frame {idx}.")
             names.append("none")
             continue
-        b = r.boxes[0]
-        x1, y1, x2, y2 = map(int, b.xyxy[0])
-        cls = model.model.names[int(b.cls[0])]
+        # Print all detected classes for debug
+        detected_classes = [model.model.names[int(box.cls[0])] for box in r.boxes]
+        print(f"[Landmark Detection] Frame {idx} detected classes: {detected_classes}")
+        # Use the highest confidence box
+        best_box = max(r.boxes, key=lambda b: float(b.conf[0]))
+        x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+        cls = model.model.names[int(best_box.cls[0])]
         crop = frame[y1:y2, x1:x2]
         txt = " ".join(t[1] for t in reader.readtext(crop))
         names.append(f"{cls} {txt}".strip())
@@ -180,7 +184,7 @@ def generate_captions(frames, device, landmarks=None, events=None):
 
     repo = "Salesforce/blip2-flan-t5-xl"
     model_id = get_or_download_model(repo, None, hf_repo=repo)
-    processor = Blip2Processor.from_pretrained(model_id)
+    processor = Blip2Processor.from_pretrained(model_id, use_fast=True)
     model = Blip2ForConditionalGeneration.from_pretrained(model_id).to(device)
 
     per_frame_captions = []
