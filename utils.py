@@ -370,8 +370,8 @@ def generate_long_summary(events, landmarks, captions):
 
     prompt = format_summary_prompt(events, cleaned_landmarks[:10], cleaned_captions[:10])
 
-    # Truncate prompt to model's true max position embeddings
-    max_input_length = getattr(model.config, 'max_position_embeddings', 512)
+    # Truncate prompt to tokenizer's max input length (model_max_length)
+    max_input_length = getattr(tokenizer, 'model_max_length', 512)
     prompt_tokens = tokenizer.encode(prompt)
     if len(prompt_tokens) > max_input_length:
         prompt = tokenizer.decode(prompt_tokens[:max_input_length])
