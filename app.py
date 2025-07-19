@@ -48,7 +48,12 @@ def run_pipeline(video_path, device=None):
         )
 
     print("[Pipeline] Generating long-form summary...")
-    long_summary = generate_long_summary(events, landmarks, captions, vivid_details)
+    try:
+        long_summary = generate_long_summary(events, landmarks, captions, vivid_details)
+        print("[Pipeline] Long-form summary generated successfully.")
+    except Exception as e:
+        print(f"[Pipeline] Error during long-form summary generation: {e}")
+        long_summary = "[Error] Failed to generate long-form summary."
 
     output = {"steps": summary, "long_summary": long_summary}
     os.makedirs("outputs", exist_ok=True)

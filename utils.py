@@ -317,11 +317,12 @@ def generate_long_summary(events, landmarks, captions, vivid_details=None):
 
     vivid_details = vivid_details or ["unknown details"] * len(events)
 
-    # --- 1. choose an inexpensive LM (runs in 2‑3 GB VRAM) ------------
+    print("[LongSummary] Loading summarization model and tokenizer...")
     repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
     cache_dir = os.path.join("models", repo.replace("/", "_"))
     tok  = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
     lm   = AutoModelForCausalLM.from_pretrained(repo, cache_dir=cache_dir)
+    print("[LongSummary] Model and tokenizer loaded.")
 
     # model limit (Bart‑large‑cnn = 1024)
     ctx_max      = getattr(lm.config, "max_position_embeddings", 1024)
@@ -348,6 +349,7 @@ def generate_long_summary(events, landmarks, captions, vivid_details=None):
     ev, lmks, caps, vivid = events[:], landmarks[:], captions[:], vivid_details[:]
     while True:
         prompt = pack(ev, lmks, caps, vivid)
+        print(f"[LongSummary] Prompt length: {len(tok(prompt).input_ids)} tokens (limit: {prompt_limit})")
         if len(tok(prompt).input_ids) <= prompt_limit:
             break
         # drop 10 % from the longest list until it fits
@@ -357,7 +359,7 @@ def generate_long_summary(events, landmarks, captions, vivid_details=None):
         elif largest == "cap":   caps  = caps[ : max(1, int(len(caps)*0.9))]
         else:                    vivid = vivid[: max(1, int(len(vivid)*0.9))]
 
-    # --- 3. generate ---------------------------------------------------
+    print("[LongSummary] Generating text...")
     device = 0 if torch.cuda.is_available() else -1
     gen = pipeline("text-generation", model=lm, tokenizer=tok, device=device)
     text = gen(
@@ -368,6 +370,7 @@ def generate_long_summary(events, landmarks, captions, vivid_details=None):
         top_p=0.9,
         no_repeat_ngram_size=4,
     )[0]["generated_text"]
+    print("[LongSummary] Text generation complete.")
 
     summary = text[len(prompt):].strip()
     # final safety trim to 1000 words
