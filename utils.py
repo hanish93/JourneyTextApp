@@ -5,7 +5,7 @@ import easyocr
 from tqdm import tqdm
 import numpy as np
 from PIL import Image
-from transformers import Blip2Processor, Blip2ForConditionalGeneration
+from transformers import Blip2Processor, Blip2ForConditionalGeneration, BitsAndBytesConfig
 
 def extract_frames(video_path, fps=1):
     """
@@ -14,7 +14,7 @@ def extract_frames(video_path, fps=1):
     """
     frames = []
     cap = cv2.VideoCapture(video_path)
-    frame_rate = cap.get(cv2.CAP_PROP_FPS)
+    frame_rate = cap.get(cv2.CAP_PROP_FPS) or 30
     count = 0
     success, image = cap.read()
     print(f"[Frames] Starting frame extraction...")
@@ -196,12 +196,14 @@ def generate_captions(frames, device, landmarks=None, events=None):
     repo = "Salesforce/blip2-flan-t5-xl"
     model_id = get_or_download_model(repo, None, hf_repo=repo)
     processor = Blip2Processor.from_pretrained(model_id, use_fast=True)
-    from transformers import BitsAndBytesConfig
-    bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+    bnb_cfg = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+    )
     model = Blip2ForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=bnb_cfg,
-        device_map={"": device},
+        device_map="auto",
     ).eval()
 
     per_frame_captions = []
@@ -211,12 +213,7 @@ def generate_captions(frames, device, landmarks=None, events=None):
             # Downscale image to max 512x512 for memory efficiency
             max_dim = 512
             if img.width > max_dim or img.height > max_dim:
-                resample = (
-                    Image.Resampling.LANCZOS
-                    if hasattr(Image, "Resampling")
-                    else Image.LANCZOS
-                )
-                img.thumbnail((max_dim, max_dim), resample)
+                img.thumbnail((max_dim, max_dim), Image.LANCZOS)
             hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
             inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
             with torch.no_grad():
@@ -251,8 +248,8 @@ def generate_captions(frames, device, landmarks=None, events=None):
 
     if events is None:
         events = ["drive"] * len(frames)
-    summary = generate_long_summary(events, landmarks or ["none"]*len(frames), per_frame_captions)
-    return summary
+    journey_text = generate_long_summary(events, landmarks or ["none"]*len(frames), per_frame_captions)
+    return per_frame_captions, journey_text
 
 
 
@@ -291,6 +288,8 @@ def generate_long_summary(events, landmarks, captions):
     )
 
     def truncate_json_list(data, max_items):
+        if not isinstance(data, list):
+            data = [data]
         if len(data) > max_items:
             return data[:max_items] + ["..."]
         return data

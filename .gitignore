@@ -11,3 +11,4 @@ blip2-flan-t5-xl/
 *.db
 *.log
 __pycache__/utils.cpython-313.pyc
+__pycache__/
