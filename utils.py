@@ -278,7 +278,10 @@ def generate_long_summary(events, landmarks, captions):
     local_dir = os.path.join("models", repo.replace("/", "_"))
     tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=local_dir)
-    summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=0 if torch.cuda.is_available() else -1)
+    # Force CPU for text generation to avoid CUDA errors
+    summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=-1)
+    if torch.cuda.is_available():
+        print("[LongSummary] Warning: CUDA is available but text generation is forced to run on CPU to avoid device-side errors.")
 
     prompt_base = (
         "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
