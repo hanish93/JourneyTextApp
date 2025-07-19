@@ -13,8 +13,11 @@ def load_training_data(training_data_dir):
         return data
     for fname in os.listdir(training_data_dir):
         if fname.endswith('.json'):
-            with open(os.path.join(training_data_dir, fname), 'r') as f:
-                data.append(json.load(f))
+            try:
+                with open(os.path.join(training_data_dir, fname), 'r') as f:
+                    data.append(json.load(f))
+            except Exception as e:
+                print(f"[Train] Warning: Failed to load {fname}: {e}")
     return data
 
 def train_blip2_on_new_data(training_data_dir, model_dir, device):

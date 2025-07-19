@@ -76,6 +76,29 @@ from transformers import Blip2Processor, Blip2ForConditionalGeneration
 from PIL import Image
 import torch
 import json
+import shutil
+
+def get_or_download_model(model_name, local_dir, download_url=None, hf_repo=None, config_file="config.json"):
+    """
+    Checks if a model exists locally. If not, downloads it (from URL or HuggingFace repo).
+    Returns the local directory path to the model.
+    """
+    if not os.path.exists(local_dir):
+        os.makedirs(local_dir, exist_ok=True)
+    config_path = os.path.join(local_dir, config_file)
+    if not os.path.exists(config_path):
+        if download_url:
+            # Download from direct URL
+            print(f"[Model] Downloading model from {download_url} to {local_dir}")
+            urllib.request.urlretrieve(download_url, os.path.join(local_dir, os.path.basename(download_url)))
+        elif hf_repo:
+            # Download from HuggingFace repo
+            print(f"[Model] Downloading HuggingFace model {hf_repo} to {local_dir}")
+            if os.path.isdir(local_dir):
+                shutil.rmtree(local_dir)
+            _ = Blip2Processor.from_pretrained(hf_repo, cache_dir=local_dir)
+            _ = Blip2ForConditionalGeneration.from_pretrained(hf_repo, cache_dir=local_dir)
+    return local_dir
 
 def save_training_data(training_data_dir, video_path, frames, events, landmarks, captions):
     """
@@ -98,9 +121,12 @@ def save_training_data(training_data_dir, video_path, frames, events, landmarks,
 def get_blip2_model_and_processor(model_dir, device):
     """
     Utility to load BLIP2 processor and model from a local directory (for training or inference).
+    Ensures the model is downloaded if not present.
     """
-    processor = Blip2Processor.from_pretrained(model_dir)
-    model = Blip2ForConditionalGeneration.from_pretrained(model_dir).to(device)
+    repo = "Salesforce/blip2-flan-t5-xl"
+    local_dir = get_or_download_model(repo, model_dir, hf_repo=repo)
+    processor = Blip2Processor.from_pretrained(local_dir)
+    model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
     return processor, model
 
 def detect_landmarks(frames, device):
@@ -115,10 +141,10 @@ def detect_landmarks(frames, device):
         model_path = logo_path
     else:
         model_path = coco_path
-        if not os.path.exists(model_path):
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt"
-            urllib.request.urlretrieve(url, model_path)
+        model_dir = os.path.dirname(model_path)
+        yolov8_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt"
+        get_or_download_model("yolov8n", model_dir, download_url=yolov8_url, config_file="yolov8n.pt")
+        model_path = coco_path
 
     model = YOLO(model_path).to(device)
     reader = easyocr.Reader(["en"], gpu=device.startswith("cuda"))
@@ -147,14 +173,9 @@ def generate_captions(frames, device, landmarks=None):
 
     repo = "Salesforce/blip2-flan-t5-xl"
     local_dir = os.path.join("models", repo.split("/")[-1])
-    if not os.path.exists(os.path.join(local_dir, "config.json")):
-        if os.path.isdir(local_dir):
-            shutil.rmtree(local_dir)
-        processor = Blip2Processor.from_pretrained(repo, cache_dir=local_dir)
-        model = Blip2ForConditionalGeneration.from_pretrained(repo, cache_dir=local_dir).to(device)
-    else:
-        processor = Blip2Processor.from_pretrained(local_dir)
-        model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
+    local_dir = get_or_download_model(repo, local_dir, hf_repo=repo)
+    processor = Blip2Processor.from_pretrained(local_dir)
+    model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
 
     captions = []
     for i, frame in enumerate(frames):
@@ -189,7 +210,10 @@ def generate_long_summary(events, landmarks, captions):
     import json
 
     model_name = os.environ.get("JOURNEY_SUMMARY_MODEL", "gpt2")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    local_dir = os.path.join("models", model_name.replace("/", "_"))
+    if not os.path.exists(local_dir):
+        AutoTokenizer.from_pretrained(model_name, cache_dir=local_dir)
+    tokenizer = AutoTokenizer.from_pretrained(local_dir)
     max_context = getattr(tokenizer, 'model_max_length', 1024)
     max_new_tokens = 256
     # Reserve space for output tokens
