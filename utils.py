@@ -156,16 +156,21 @@ def detect_landmarks(frames, device, conf_threshold=0.25):
             print(f"[Landmark Detection] No boxes detected in frame {idx}.")
             names.append("none")
             continue
-        # Print all detected classes for debug
-        detected_classes = [model.model.names[int(box.cls[0])] for box in r.boxes]
-        print(f"[Landmark Detection] Frame {idx} detected classes: {detected_classes}")
-        # Use the highest confidence box
-        best_box = max(r.boxes, key=lambda b: float(b.conf[0]))
-        x1, y1, x2, y2 = map(int, best_box.xyxy[0])
-        cls = model.model.names[int(best_box.cls[0])]
-        crop = frame[y1:y2, x1:x2]
-        txt = " ".join(t[1] for t in reader.readtext(crop))
-        names.append(f"{cls} {txt}".strip())
+        # Collect all detected classes with confidence and OCR if possible
+        detected_info = []
+        for box in r.boxes:
+            cls = model.model.names[int(box.cls[0])]
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            crop = frame[y1:y2, x1:x2]
+            txt = " ".join(t[1] for t in reader.readtext(crop))
+            if txt:
+                detected_info.append(f"{cls} ({conf:.2f}) [{txt}]")
+            else:
+                detected_info.append(f"{cls} ({conf:.2f})")
+        detected_str = ", ".join(detected_info)
+        print(f"[Landmark Detection] Frame {idx} detected: {detected_str}")
+        names.append(detected_str if detected_str else "none")
 
     print(f"[Landmark Detection] Landmarks detected for {len([n for n in names if n != 'none'])} out of {len(frames)} frames.")
     return names
