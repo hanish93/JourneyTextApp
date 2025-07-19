@@ -1,0 +1,12 @@
+__pycache__/
+blip2-flan-t5-xl/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+*.dist-info/
+*.whl
+*.db
+*.log
