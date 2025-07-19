@@ -356,9 +356,7 @@ def generate_long_summary(events, landmarks, captions):
     Generate a long-form journey summary (250-400 words) with improved legibility.
     Cleans and filters captions, formats the prompt in natural language, and ensures prompt fits model context.
     """
-    # Use PEGASUS as default, but allow override via env var
-    repo = os.getenv("JOURNEY_SUMMARY_MODEL", "google/pegasus-xsum")
-    print(f"[Summary] Using summarization model: {repo}")
+    repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
     cache_dir = os.path.join("models", repo.replace("/", "_"))
     tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=cache_dir)
@@ -372,22 +370,69 @@ def generate_long_summary(events, landmarks, captions):
 
     prompt = format_summary_prompt(events, cleaned_landmarks[:10], cleaned_captions[:10])
 
-    # Truncate prompt to the minimum of tokenizer's and model's max input length
+    # GPT-style: sliding window, dynamic chunking, hierarchical summarization
     tokenizer_max = getattr(tokenizer, 'model_max_length', 1024)
     model_max = getattr(model.config, 'max_position_embeddings', 1024)
     max_input_length = min(tokenizer_max, model_max)
-    prompt_tokens = tokenizer.encode(prompt)
-    if len(prompt_tokens) > max_input_length:
-        prompt = tokenizer.decode(prompt_tokens[:max_input_length])
+    overlap_tokens = int(max_input_length * 0.2)  # 20% overlap
 
-    try:
-        output = summarizer(prompt, max_length=256, min_length=100, do_sample=False)
-        summary = output[0]['summary_text']
-        words = summary.split()
-        if len(words) > 1000:
-            summary = " ".join(words[:1000]) + "..."
-        return summary
-    except Exception as e:
-        print(f"[Summary] Error during summarization: {e}")
-        return "Could not generate a summary due to an error."
+    def summarize_prompt(p):
+        output = summarizer(p, max_length=256, min_length=100, do_sample=False)
+        return output[0]['summary_text']
+
+    def chunk_captions_by_tokens(captions, max_tokens, overlap):
+        chunks = []
+        i = 0
+        while i < len(captions):
+            chunk = []
+            token_count = 0
+            j = i
+            while j < len(captions):
+                test_chunk = chunk + [captions[j]]
+                prompt = format_summary_prompt(events[:10], cleaned_landmarks[:10], test_chunk)
+                tokens = tokenizer.encode(prompt)
+                if token_count + len(tokens) > max_tokens:
+                    break
+                chunk.append(captions[j])
+                token_count = len(tokens)
+                j += 1
+            if not chunk:
+                # Fallback: force at least one caption per chunk
+                chunk = [captions[i]]
+                j = i + 1
+            chunks.append((i, j, chunk))
+            # Sliding window: overlap
+            i = j - overlap if (j - overlap) > i else j
+        return chunks
+
+    def hierarchical_summarize(captions):
+        # Step 1: chunk and summarize
+        chunks = chunk_captions_by_tokens(captions, max_input_length, overlap=2)
+        chunk_summaries = []
+        for start, end, chunk in chunks:
+            batch_prompt = format_summary_prompt(events[:10], cleaned_landmarks[:10], chunk)
+            try:
+                chunk_summary = summarize_prompt(batch_prompt)
+                chunk_summaries.append(chunk_summary)
+            except Exception as e:
+                print(f"[Summary] Error during chunk summarization: {e}")
+                continue
+        # Step 2: if needed, recursively summarize
+        combined = "\n".join(chunk_summaries)
+        combined_tokens = tokenizer.encode(combined)
+        if len(combined_tokens) > max_input_length and len(chunk_summaries) > 1:
+            print("[Summary] Recursively summarizing combined output...")
+            return hierarchical_summarize(chunk_summaries)
+        else:
+            return combined
+
+    prompt_tokens = tokenizer.encode(prompt)
+    if len(prompt_tokens) <= max_input_length:
+        try:
+            return summarize_prompt(prompt)
+        except Exception as e:
+            print(f"[Summary] Error during summarization: {e}")
+            return "Could not generate a summary due to an error."
+    else:
+        return hierarchical_summarize(cleaned_captions)
 
