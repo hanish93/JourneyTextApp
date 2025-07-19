@@ -94,15 +94,14 @@ def get_or_download_model(model_name, local_dir, download_url=None, hf_repo=None
         elif hf_repo:
             # Download from HuggingFace repo
             print(f"[Model] Downloading HuggingFace model {hf_repo} to {local_dir}")
-            if os.path.isdir(local_dir):
-                shutil.rmtree(local_dir)
+            # Do NOT delete the directory; let HuggingFace manage the cache
             _ = Blip2Processor.from_pretrained(hf_repo, cache_dir=local_dir)
             _ = Blip2ForConditionalGeneration.from_pretrained(hf_repo, cache_dir=local_dir)
     return local_dir
 
 def save_training_data(training_data_dir, video_path, frames, events, landmarks, captions):
     """
-    Save frames, events, landmarks, and captions for a video as training data.
+    Save frames, events, landmarks, and the full journey summary as training data.
     Frames are not saved as images to save space, but you can extend this to save images if needed.
     """
     os.makedirs(training_data_dir, exist_ok=True)
@@ -112,7 +111,7 @@ def save_training_data(training_data_dir, video_path, frames, events, landmarks,
         "video": video_path,
         "events": events,
         "landmarks": landmarks,
-        "captions": captions
+        "journey_summary": captions if isinstance(captions, str) else "\n".join(captions)
     }
     with open(out_json, 'w') as f:
         json.dump(data, f, indent=2)
@@ -150,9 +149,14 @@ def detect_landmarks(frames, device):
     reader = easyocr.Reader(["en"], gpu=device.startswith("cuda"))
 
     names = []
-    for frame in tqdm(frames, unit="frame"):
+    for idx, frame in enumerate(tqdm(frames, unit="frame")):
+        if frame is None or not hasattr(frame, 'shape'):
+            print(f"[Landmark Detection] Warning: Frame {idx} is invalid or empty.")
+            names.append("none")
+            continue
         r = model(frame, verbose=False)[0]
         if len(r.boxes) == 0:
+            print(f"[Landmark Detection] No boxes detected in frame {idx}.")
             names.append("none")
             continue
         b = r.boxes[0]
@@ -162,11 +166,17 @@ def detect_landmarks(frames, device):
         txt = " ".join(t[1] for t in reader.readtext(crop))
         names.append(f"{cls} {txt}".strip())
 
+    print(f"[Landmark Detection] Landmarks detected for {len([n for n in names if n != 'none'])} out of {len(frames)} frames.")
     return names
 
 
 # utils.py
-def generate_captions(frames, device, landmarks=None):
+def generate_captions(frames, device, landmarks=None, events=None):
+    """
+    Generate a complete journey summary using the frames, landmarks, and events.
+    This now returns a single narrative summary instead of per-frame captions.
+    """
+    # Generate per-frame captions as before
     import os, shutil, cv2, torch
     from PIL import Image
     from transformers import Blip2Processor, Blip2ForConditionalGeneration
@@ -177,15 +187,20 @@ def generate_captions(frames, device, landmarks=None):
     processor = Blip2Processor.from_pretrained(local_dir)
     model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
 
-    captions = []
+    per_frame_captions = []
     for i, frame in enumerate(frames):
         img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
         inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
         with torch.no_grad():
             ids = model.generate(**inputs, max_new_tokens=30)
-        captions.append(processor.batch_decode(ids, skip_special_tokens=True)[0].strip())
-    return captions
+        per_frame_captions.append(processor.batch_decode(ids, skip_special_tokens=True)[0].strip())
+
+    # Use generate_long_summary to create a full narrative
+    if events is None:
+        events = ["drive"] * len(frames)
+    summary = generate_long_summary(events, landmarks or ["none"]*len(frames), per_frame_captions)
+    return summary
 
 
 
