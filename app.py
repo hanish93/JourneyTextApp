@@ -9,6 +9,7 @@ from utils import (
     summarise_journey,
     generate_long_summary,
     save_training_data,
+    detect_vivid_details,
 )
 
 
@@ -21,6 +22,10 @@ def run_pipeline(video_path, device=None):
     print(f"[Pipeline] Extracting frames from {video_path}...")
     frames = extract_frames(video_path)
     print(f"[Pipeline] Extracted {len(frames)} frames.")
+
+    print("[Pipeline] Detecting vivid scene details...")
+    vivid_details = detect_vivid_details(frames, device)
+    print(f"[Pipeline] Vivid details detected for {len(vivid_details)} frames.")
 
     print("[Pipeline] Detecting events...")
     events = detect_events(frames)
@@ -35,7 +40,7 @@ def run_pipeline(video_path, device=None):
     print(f"[Pipeline] Captions generated for {len(captions)} frames.")
 
     print("[Pipeline] Summarising journey...")
-    summary = summarise_journey(events, landmarks, captions)
+    summary = summarise_journey(events, landmarks, captions, vivid_details)
 
     for step in summary:
         print(
@@ -43,7 +48,7 @@ def run_pipeline(video_path, device=None):
         )
 
     print("[Pipeline] Generating long-form summary...")
-    long_summary = generate_long_summary(events, landmarks, captions)
+    long_summary = generate_long_summary(events, landmarks, captions, vivid_details)
 
     output = {"steps": summary, "long_summary": long_summary}
     os.makedirs("outputs", exist_ok=True)

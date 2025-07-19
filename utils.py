@@ -7,6 +7,42 @@ import numpy as np
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration, BitsAndBytesConfig
 
+# --- Vivid detail detection using CLIP or similar model ---
+def detect_vivid_details(frames, device):
+    """
+    Detect vivid scene attributes (weather, time of day, ambiance, etc.) for each frame.
+    Uses a pre-trained model (e.g., CLIP) for zero-shot classification.
+    Returns a list of vivid detail strings, one per frame.
+    """
+    try:
+        from transformers import CLIPProcessor, CLIPModel
+        import torch
+        from PIL import Image
+        import cv2
+        import numpy as np
+        from tqdm import tqdm
+    except ImportError:
+        print("[VividDetails] Required packages not found. Please install transformers, torch, and tqdm.")
+        return ["unknown details"] * len(frames)
+
+    # Define candidate vivid detail prompts
+    detail_prompts = [
+        "sunny day", "rainy weather", "foggy", "nighttime", "dawn", "dusk", "urban street", "country road", "mountainous", "forest", "busy traffic", "empty road", "snowy", "autumn colors", "spring blossoms", "summer heat", "winter scene", "calm", "tense", "joyful", "mysterious"
+    ]
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+    model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").to(device)
+
+    vivid_details = []
+    for frame in tqdm(frames, desc="[VividDetails] Detecting", unit="frame"):
+        img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        inputs = processor(text=detail_prompts, images=img, return_tensors="pt", padding=True).to(device)
+        with torch.no_grad():
+            logits_per_image = model(**inputs).logits_per_image
+            probs = logits_per_image.softmax(dim=1).cpu().numpy()[0]
+        best_idx = int(np.argmax(probs))
+        vivid_details.append(detail_prompts[best_idx])
+    return vivid_details
+
 def extract_frames(video_path, fps=1):
     """
     Extract frames from the input video at the specified FPS.
@@ -253,23 +289,33 @@ def generate_captions(frames, device, landmarks=None, events=None):
 
 
 
-def summarise_journey(events, landmarks, captions):
+def summarise_journey(events, landmarks, captions, vivid_details=None):
     summary = []
-    for i, (event, landmark, caption) in enumerate(zip(events, landmarks, captions)):
+    vivid_details = vivid_details or ["unknown details"] * len(events)
+    for i, (event, landmark, caption, vivid) in enumerate(zip(events, landmarks, captions, vivid_details)):
+        vivid_desc = (
+            f"As the journey unfolds, step {i+1} features a moment of '{event}'. "
+            f"{caption} "
+            f"Notable sights: {landmark if landmark != 'none' else 'no major landmarks detected'}. "
+            f"Scene details: {vivid}. "
+            f"The atmosphere is vibrant and immersive, drawing the traveler deeper into the experience."
+        )
         summary.append({
             "step": i+1,
             "event": event,
-            "description": f"{caption} Landmark: {landmark}."
+            "description": vivid_desc
         })
     return summary
 
-def generate_long_summary(events, landmarks, captions):
+def generate_long_summary(events, landmarks, captions, vivid_details=None):
     """
     Create a 250‑400‑word journey narrative.
     Ensures the prompt never exceeds the model’s max positional length.
     """
     from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
     import os, json, torch
+
+    vivid_details = vivid_details or ["unknown details"] * len(events)
 
     # --- 1. choose an inexpensive LM (runs in 2‑3 GB VRAM) ------------
     repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
@@ -284,28 +330,32 @@ def generate_long_summary(events, landmarks, captions):
 
     # --- 2. pack the JSON chunks, truncate until tokens fit ------------
     base_hdr = (
-        "You are an expert journey summarizer. "
-        "Compose a vivid 250‑400‑word narrative of the route.\n\n"
+        "You are an expert journey summarizer and storyteller. "
+        "Compose a vivid, immersive, and emotionally engaging 250‑400‑word narrative of the route. "
+        "Use rich, sensory language to bring the journey to life, describing sights, sounds, and feelings. "
+        "Highlight key events, landmarks, and vivid scene details, and make the reader feel as if they are experiencing the journey firsthand.\n\n"
     )
 
-    def pack(ev, lmks, caps):
+    def pack(ev, lmks, caps, vivid):
         return (
             base_hdr +
             f"Events: {json.dumps(ev)}\n"
             f"Landmarks: {json.dumps(lmks)}\n"
-            f"Captions: {json.dumps(caps)}\n\nSummary:"
+            f"Captions: {json.dumps(caps)}\n"
+            f"VividDetails: {json.dumps(vivid)}\n\nSummary:"
         )
 
-    ev, lmks, caps = events[:], landmarks[:], captions[:]
+    ev, lmks, caps, vivid = events[:], landmarks[:], captions[:], vivid_details[:]
     while True:
-        prompt = pack(ev, lmks, caps)
+        prompt = pack(ev, lmks, caps, vivid)
         if len(tok(prompt).input_ids) <= prompt_limit:
             break
         # drop 10 % from the longest list until it fits
-        largest = max((len(ev), "ev"), (len(lmks), "lm"), (len(caps), "cap"))[1]
-        if   largest == "ev":  ev   = ev[ : max(1, int(len(ev)*0.9)) ]
-        elif largest == "lm":  lmks = lmks[: max(1, int(len(lmks)*0.9))]
-        else:                  caps = caps[: max(1, int(len(caps)*0.9))]
+        largest = max((len(ev), "ev"), (len(lmks), "lm"), (len(caps), "cap"), (len(vivid), "vivid"))[1]
+        if   largest == "ev":    ev    = ev[   : max(1, int(len(ev)*0.9)) ]
+        elif largest == "lm":    lmks  = lmks[ : max(1, int(len(lmks)*0.9))]
+        elif largest == "cap":   caps  = caps[ : max(1, int(len(caps)*0.9))]
+        else:                    vivid = vivid[: max(1, int(len(vivid)*0.9))]
 
     # --- 3. generate ---------------------------------------------------
     device = 0 if torch.cuda.is_available() else -1
