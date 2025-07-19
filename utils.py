@@ -177,26 +177,32 @@ def generate_captions(frames, device, landmarks=None, events=None):
     Generate a complete journey summary using the frames, landmarks, and events.
     This now returns a single narrative summary instead of per-frame captions.
     """
-    # Generate per-frame captions as before
     import os, shutil, cv2, torch
     from PIL import Image
     from transformers import Blip2Processor, Blip2ForConditionalGeneration
+    from tqdm import tqdm
 
+    print(f"[BLIP2] Using device: {device}")
     repo = "Salesforce/blip2-flan-t5-xl"
     model_id = get_or_download_model(repo, None, hf_repo=repo)
     processor = Blip2Processor.from_pretrained(model_id, use_fast=True)
     model = Blip2ForConditionalGeneration.from_pretrained(model_id).to(device)
+    model.eval()
 
     per_frame_captions = []
-    for i, frame in enumerate(frames):
-        img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
-        inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
-        with torch.no_grad():
-            ids = model.generate(**inputs, max_new_tokens=30)
-        per_frame_captions.append(processor.batch_decode(ids, skip_special_tokens=True)[0].strip())
+    for i, frame in enumerate(tqdm(frames, desc="[BLIP2] Generating captions", unit="frame")):
+        try:
+            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) else ""
+            inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
+            with torch.no_grad():
+                ids = model.generate(**inputs, max_new_tokens=30)
+            caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+            per_frame_captions.append(caption)
+        except Exception as e:
+            print(f"[BLIP2] Error generating caption for frame {i}: {e}")
+            per_frame_captions.append("")
 
-    # Use generate_long_summary to create a full narrative
     if events is None:
         events = ["drive"] * len(frames)
     summary = generate_long_summary(events, landmarks or ["none"]*len(frames), per_frame_captions)
