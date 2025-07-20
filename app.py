@@ -1,74 +1,34 @@
-import os
-import json
-import subprocess
+# app.py  — 2025‑07‑20
+import os, json, subprocess, torch
 from utils import (
-    extract_frames,
-    detect_events,
-    detect_landmarks,
-    generate_captions,
-    summarise_journey,
-    generate_long_summary,
-    save_training_data,
+    extract_frames, detect_events, detect_landmarks,
+    generate_captions, summarise_journey, save_training_data
 )
 
+def run_pipeline(video):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[Pipeline] device = {device}")
 
-def run_pipeline(video_path, device=None):
-    import torch
-
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Pipeline] Using device: {device}")
-
-    print(f"[Pipeline] Extracting frames from {video_path}...")
-    frames = extract_frames(video_path)
-    print(f"[Pipeline] Extracted {len(frames)} frames.")
-
-    print("[Pipeline] Detecting events...")
+    frames = extract_frames(video)
     events = detect_events(frames)
-    print(f"[Pipeline] Detected {len(events)} events.")
-
-    print("[Pipeline] Detecting landmarks using YOLO...")
     landmarks = detect_landmarks(frames, device)
-    print(f"[Pipeline] Landmarks detected for {len(landmarks)} frames.")
 
-    print("[Pipeline] Generating captions using BLIP2...")
-    captions = generate_captions(frames, device, landmarks=landmarks)
-    print(f"[Pipeline] Captions generated for {len(captions)} frames.")
+    captions, long_text = generate_captions(frames, device, landmarks, events)
+    steps = summarise_journey(events, landmarks, captions)
 
-    print("[Pipeline] Summarising journey...")
-    summary = summarise_journey(events, landmarks, captions)
+    for s in steps:
+        print(f"[Step {s['step']:03}] {s['event']:<11} | {s['description']}")
 
-    for step in summary:
-        print(
-            f"[Step {step['step']:03}] {step['event']:<11} | {step['description']}"
-        )
-
-    print("[Pipeline] Generating long-form summary...")
-    long_summary = generate_long_summary(events, landmarks, captions)
-
-    output = {"steps": summary, "long_summary": long_summary}
+    out = {"steps": steps, "long_summary": long_text}
     os.makedirs("outputs", exist_ok=True)
-    out_path = os.path.join(
-        "outputs", os.path.basename(video_path) + "_summary.json"
-    )
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
-    print(f"[Pipeline] Summary saved to {out_path}")
+    op = os.path.join("outputs", os.path.basename(video) + "_summary.json")
+    json.dump(out, open(op, "w"), indent=2)
+    print(f"[Pipeline] summary → {op}")
 
-    training_dir = os.path.dirname(video_path)
-    save_training_data(
-        training_dir, video_path, frames, events, landmarks, captions
-    )
+    save_training_data(os.path.dirname(video), video, frames, events, landmarks, captions)
 
-    print("[Pipeline] Training BLIP2 model on new data...")
-    subprocess.run(
-        [
-            "python",
-            "train.py",
-            "--training_data_dir",
-            training_dir,
-            "--model_dir",
-            "models/blip2-flan-t5-xl",
-        ],
-        check=True,
-    )
-    print("[Pipeline] Model training complete.")
+if __name__ == "__main__":
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--video", required=True)
+    run_pipeline(p.parse_args().video)
