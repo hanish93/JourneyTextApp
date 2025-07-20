@@ -26,7 +26,7 @@ def generate_captions(frames, device, is_keyframe=None):
     # decode caption
     caption = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
-    return [caption] * len(frames), caption
+    return caption
 
 def generate_long_summary(events, landmarks, captions):
     """
