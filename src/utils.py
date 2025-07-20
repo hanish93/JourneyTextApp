@@ -107,35 +107,51 @@ def generate_caption_for_frame(f,proc,mod,lm=None):
     return proc.batch_decode(ids,skip_special_tokens=True)[0].strip()
 
 # ───────────── summary generator ─────────────────────────────────────────
-def generate_long_summary(events,landmarks,captions,scenes,ocr,stats):
-    repo="mistralai/Mistral-7B-Instruct-v0.2"
-    model=AutoModelForCausalLM.from_pretrained(repo,device_map="auto",
-            quantization_config=BitsAndBytesConfig(load_in_8bit=True),torch_dtype=torch.float16)
-    tok=AutoTokenizer.from_pretrained(repo)
+# … (unchanged imports and helper code above)
 
-    lines=[]
+def generate_long_summary(events, landmarks, captions, scenes, ocr, stats):
+    repo = "mistralai/Mistral-7B-Instruct-v0.2"
+    model = AutoModelForCausalLM.from_pretrained(
+        repo, device_map="auto",
+        quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+        torch_dtype=torch.float16
+    )
+    tok = AutoTokenizer.from_pretrained(repo)
+
+    # ---- build per‑frame lines ------------------------------------------------
+    lines = []
     for i in range(len(events)):
-        cap_clean=" ".join(w for w in captions[i].split() if w.lower() not in DYNAMIC_WORDS)
-        lines.append(f"Frame {i+1}: Scene={scenes[i]}, Event={events[i]}, "
-                     f"Caption={cap_clean}, Landmark={landmarks[i]}, OCR='{ocr[i]}'")
+        cap_clean = " ".join(w for w in captions[i].split() if w.lower() not in DYNAMIC_WORDS)
+        lines.append(
+            f"Frame {i+1}: Scene={scenes[i]}, Event={events[i]}, "
+            f"Caption={cap_clean}, Landmark={landmarks[i]}, OCR='{ocr[i]}'"
+        )
 
-    whitelist=[]
+    # ---- build whitelist -----------------------------------------------------
+    whitelist = []
     for bag in stats.values():
-        whitelist.extend(t for t,_ in sorted(bag.items(),key=lambda kv:(-kv[1][0],-kv[1][1]))[:2])
+        whitelist.extend(
+            t for t, _ in sorted(bag.items(), key=lambda kv: (-kv[1][0], -kv[1][1]))[:2]
+        )
 
     if whitelist:
-        guard=f"Use **only** these place names (and no others): {', '.join(whitelist)}.\n"
+        guard = f"Use **only** these place names (and no others): {', '.join(whitelist)}.\n"
     else:
-        guard="Do **not** mention any place names, cities, countries or regions.\n"
+        guard = "Do **not** mention any place names, cities, or countries.\n"
 
-    prompt=("Summarize the journey factually in a diary tone. "
-            "Ignore transient objects like people and vehicles.\n"+
-            guard+"---\n"+ "\n".join(lines)+"\n---\nJourney Summary:\n")
+    # ---- final prompt --------------------------------------------------------
+    prompt = (
+        "Summarize the journey below in a factual diary tone. "
+        "Ignore transient objects such as people and vehicles. "
+        "Do not use *Day 1 / Day 2* headings.\n"
+        + guard + "---\n" + "\n".join(lines) + "\n---\nJourney Summary:\n"
+    )
 
-    inp=tok(prompt,return_tensors="pt").to(model.device)
+    inp = tok(prompt, return_tensors="pt").to(model.device)
     with torch.no_grad():
-        out=model.generate(**inp,max_new_tokens=160,do_sample=False,top_p=1.0)
-    return tok.decode(out[0],skip_special_tokens=True).split("Journey Summary:")[-1].strip()
+        out = model.generate(**inp, max_new_tokens=160, do_sample=False)
+    return tok.decode(out[0], skip_special_tokens=True).split("Journey Summary:")[-1].strip()
+
 
 # ───────────── step table helper ─────────────────────────────────────────
 def summarise_journey(ev,lm,cap,scn,ocr):
