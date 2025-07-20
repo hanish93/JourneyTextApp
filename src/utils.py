@@ -157,10 +157,17 @@ def generate_caption_for_frame(frame, processor, model, landmark=None):
 # ───────────────────────── long‑form narrative generator ─────────────────────
 def generate_long_summary(events, landmarks, captions, scenes, ocr_texts):
     from transformers import pipeline
+    import torch
 
     # Using a more powerful, instruction-tuned model
     repo = "mistralai/Mistral-7B-Instruct-v0.2"
-    summarizer = pipeline("text-generation", model=repo, model_kwargs={"torch_dtype": torch.bfloat16}, device_map="auto")
+    torch.cuda.empty_cache()  # Clear unused memory
+    summarizer = pipeline(
+        "text-generation",
+        model=repo,
+        model_kwargs={"torch_dtype": torch.float16},  # Use float16
+        device_map="auto"
+    )
 
     # Create a detailed context string
     long_text = "\n".join([
@@ -178,8 +185,14 @@ Mention key scenes, activities, and landmarks.
 Journey Summary:
 """
 
-    # Generate the summary
-    response = summarizer(prompt, max_new_tokens=300, num_return_sequences=1, temperature=0.7, top_p=0.9)
+   # Generate the summary
+    response = summarizer(
+        prompt,
+        max_new_tokens=150,  # Reduce token count
+        num_return_sequences=1,
+        temperature=0.7,
+        top_p=0.9
+    )
     return response[0]['generated_text'].split("Journey Summary:")[1].strip()
 
 # ──────────────────────────── JSON‑friendly helpers ──────────────────────────
