@@ -64,8 +64,7 @@ def get_landmark_models(device):
         )
     model = YOLO(logo_w if os.path.exists(logo_w) else coco_w).to(device)
     model.model.half()
-    gpu_id = int(device.split(":")[-1]) if device.startswith("cuda") else False
-    ocr = easyocr.Reader(["en", "it"], gpu=gpu_id)
+    ocr = easyocr.Reader(["en", "it"], gpu=device.startswith("cuda"))
     return model, ocr
 
 def get_scene_model(device):
