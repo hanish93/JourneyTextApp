@@ -105,7 +105,7 @@ def run_pipeline(video_path: str, device: str | None = None) -> None:
         print(f"[{s['step']:03}] {s['event']:<11} | {s['description']}")
 
     logging.info("Generating long‑form summary …")
-    long_story = generate_long_summary(events, landmarks, captions)
+    long_story = generate_long_summary(events, landmarks, captions, use_gpu=False)
 
     print("\n―――――  Long‑form summary  ―――――\n")
     print(long_story)
