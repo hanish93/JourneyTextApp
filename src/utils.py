@@ -173,7 +173,7 @@ def get_caption_models(device):
     model = BlipForConditionalGeneration.from_pretrained(repo).to(device)
     return processor, model
 
-def generate_caption_for_frame(frame, processor, model, landmark=None, brands=None):
+def generate_caption_for_frame(frame, processor, model, landmark=None, ocr_text=None, brands=None):
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     if max(img.size) > 512:
         res = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
