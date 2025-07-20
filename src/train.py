@@ -1,7 +1,7 @@
 import os
 import json
 import torch
-from utils import get_blip2_model_and_processor
+from .utils import get_blip2_model_and_processor
 
 def load_training_data(training_data_dir):
     """
