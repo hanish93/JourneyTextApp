@@ -22,6 +22,7 @@ def run_pipeline(video_path, device=None):
     try:
         print(f"[Pipeline] Extracting frames from {video_path}...")
 
+
         all_is_keyframe = []
         all_events = []
         all_landmarks = []
@@ -57,6 +58,7 @@ def run_pipeline(video_path, device=None):
                 print(f"[Pipeline] Caption generated for batch.")
 
             print(f"[Pipeline] Extracted {frame_count} frames, including {sum(all_is_keyframe)} keyframes.")
+
 
             print("[Pipeline] Summarising journey...")
             summary = summarise_journey(all_events, all_landmarks, all_captions)
@@ -96,6 +98,8 @@ def run_pipeline(video_path, device=None):
                 check=True,
             )
             print("[Pipeline] Model training complete.")
+            
+
     except Exception as e:
         print(f"An error occurred during the pipeline: {e}")
         # Optionally, save a partial or error summary
