@@ -2,7 +2,7 @@
 import torch
 import cv2
 import logging
-from .utils import (
+from utils import (
     extract_frames,
     detect_event_for_frame,
     get_landmark_models,

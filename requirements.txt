@@ -1,6 +1,5 @@
 accelerate>=0.29
 bitsandbytes>=0.43
-pillow==9.5.0
 torch
 opencv-python
 transformers
@@ -10,3 +9,4 @@ ultralytics>=8.2.0
 easyocr>=1.7.1
 tqdm
 protobuf
+pillow==9.5.0
