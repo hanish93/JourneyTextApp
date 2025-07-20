@@ -1,33 +1,39 @@
-# app.py  — 2025‑07‑20
-import os, json, subprocess, torch
+# app.py – print‑only edition
+import torch
 from utils import (
-    extract_frames, detect_events, detect_landmarks,
-    generate_captions, summarise_journey, save_training_data
+    extract_frames,  detect_events, detect_landmarks,
+    generate_captions, summarise_journey
 )
 
-def run_pipeline(video):
+def run_pipeline(video_path: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[Pipeline] device = {device}")
+    print(f"\n=== Journey summary for {video_path} (device: {device}) ===\n")
 
-    frames = extract_frames(video)
+    # 1. frames
+    frames = extract_frames(video_path)
+
+    # 2. temporal events
     events = detect_events(frames)
+
+    # 3. spatial landmarks
     landmarks = detect_landmarks(frames, device)
 
-    captions, long_text = generate_captions(frames, device, landmarks, events)
+    # 4. captions + long narrative
+    captions, long_story = generate_captions(
+        frames, device, landmarks, events
+    )
+
+    # 5. step table
     steps = summarise_journey(events, landmarks, captions)
-
     for s in steps:
-        print(f"[Step {s['step']:03}] {s['event']:<11} | {s['description']}")
+        print(f"[{s['step']:03}] {s['event']:<11} | {s['description']}")
 
-    out = {"steps": steps, "long_summary": long_text}
-    os.makedirs("outputs", exist_ok=True)
-    op = os.path.join("outputs", os.path.basename(video) + "_summary.json")
-    json.dump(out, open(op, "w"), indent=2)
-    print(f"[Pipeline] summary → {op}")
+    # 6. narrative
+    print("\n―――――  Long‑form summary  ―――――\n")
+    print(long_story)
+    print("\n―――――――――――――――――――――――――――――\n")
 
-    save_training_data(os.path.dirname(video), video, frames, events, landmarks, captions)
-
-if __name__ == "__main__":
+if __name__ == "__main__":        # allows: python app.py --video …
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--video", required=True)
