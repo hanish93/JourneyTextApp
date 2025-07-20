@@ -77,16 +77,46 @@ def get_landmark_models(device):
 def detect_landmarks_for_frame(frame, model, ocr, conf=0.25):
     r = model(frame, verbose=False, conf=conf)[0]
     if len(r.boxes) == 0:
-        return "none"
-    boxes = []
+        return {
+            "vehicles": [],
+            "landmarks": [],
+            "buildings": [],
+            "road_details": [],
+            "raw": "none"
+        }
+    # COCO/YOLO class mappings
+    vehicle_classes = {"car", "bus", "truck", "motorcycle", "bicycle", "van", "taxi", "train"}
+    road_classes = {"road", "lane", "crosswalk", "traffic light", "stop sign", "parking meter", "fire hydrant", "street sign", "traffic sign", "bridge"}
+    building_classes = {"building", "house", "skyscraper", "apartment", "church", "mosque", "temple", "castle", "hotel", "store", "shop", "office", "tower", "barn", "garage", "warehouse", "school", "hospital", "bank", "restaurant", "mall", "supermarket", "stadium", "library", "museum"}
+    # All other detected objects will be considered as landmarks
+    vehicles, landmarks, buildings, road_details, raw = [], [], [], [], []
     for b in r.boxes:
         cls = model.model.names[int(b.cls[0])]
-        conf = float(b.conf[0])
+        conf_score = float(b.conf[0])
         x1,y1,x2,y2 = map(int, b.xyxy[0])
         crop = frame[y1:y2, x1:x2]
         txt  = " ".join(t[1] for t in ocr.readtext(crop))
-        boxes.append(f"{cls} ({conf:.2f}) [{txt}]" if txt else f"{cls} ({conf:.2f})")
-    return ", ".join(boxes)
+        label = f"{cls} ({conf_score:.2f}) [{txt}]" if txt else f"{cls} ({conf_score:.2f})"
+        raw.append(label)
+        if cls in vehicle_classes:
+            vehicles.append(label)
+        elif cls in building_classes:
+            # Add building name/details if OCR text is found
+            if txt:
+                buildings.append(f"{cls} ({conf_score:.2f}) Name: {txt}")
+            else:
+                buildings.append(label)
+        elif cls in road_classes:
+            road_details.append(label)
+        else:
+            landmarks.append(label)
+    return {
+        "vehicles": vehicles,
+        "landmarks": landmarks,
+        "buildings": buildings,
+        "road_details": road_details,
+        "raw": ", ".join(raw)
+    }
 
 # ──────────────────────────── caption generator (BLIP‑2) ─────────────────────
 def get_caption_models(device):
@@ -120,7 +150,7 @@ def generate_long_summary(events, landmarks, captions):
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(repo)
     input_tokens = tokenizer.encode(input_text)
-    if len(input_tokens) <= ctx_max:
+    if len(input_tokens) <= ctx_max and len(input_tokens) > 0:
         summary = summarizer(input_text, max_length=out_tok, min_length=30, do_sample=False)
         return summary[0]['summary_text']
     # Chunking
@@ -129,19 +159,23 @@ def generate_long_summary(events, landmarks, captions):
     while start < len(input_tokens):
         end = min(start + ctx_max, len(input_tokens))
         chunk_text = tokenizer.decode(input_tokens[start:end], skip_special_tokens=True)
-        chunks.append(chunk_text)
+        if chunk_text.strip():
+            chunks.append(chunk_text)
         start = end
     # Summarize each chunk and join
     summaries = []
     for chunk in chunks:
-        s = summarizer(chunk, max_length=out_tok, min_length=30, do_sample=False)
-        summaries.append(s[0]['summary_text'])
+        if chunk.strip():
+            s = summarizer(chunk, max_length=out_tok, min_length=30, do_sample=False)
+            summaries.append(s[0]['summary_text'])
     # Optionally, summarize the summaries if there are many
     if len(summaries) > 1:
         final_summary = summarizer(" ".join(summaries), max_length=out_tok, min_length=30, do_sample=False)
         return final_summary[0]['summary_text']
-    else:
+    elif len(summaries) == 1:
         return summaries[0]
+    else:
+        return "(No summary could be generated.)"
 
 # ──────────────────────────── JSON‑friendly helpers ──────────────────────────
 def summarise_journey(events, landmarks, captions):
