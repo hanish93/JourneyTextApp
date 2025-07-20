@@ -197,11 +197,9 @@ def generate_long_summary(events, landmarks, captions, scenes, ocr_texts, sign_s
         trailer = "\n" + "\n".join(top_txt)
 
     prompt = (
-        "Summarize the following journey from a video in a travel‑diary style.\n"
-        "Write a smooth, engaging, and highly detailed journey summary in stepwise format.\n"
-        "Describe the movement of the vehicle, including turnes, key landmarks, traffic intersections (like stops at lights or turns). Maintain a flowing language.\n"
-        "Use the frame‑by‑frame details to build a compelling narrative.\n"
-        "Mention key scenes, activities, and *at most ten* important signs/buildings.\n"
+        "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
+        "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. "
+        "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
         "---\n" + long_text + trailer + "\n---\nJourney Summary:\n"
     )
 
