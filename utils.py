@@ -124,16 +124,16 @@ def get_or_download_model(model_name, local_dir, download_url=None, hf_repo=None
             urllib.request.urlretrieve(download_url, os.path.join(local_dir, os.path.basename(download_url)))
     return local_dir
 
-def save_training_data(training_data_dir, video_path, frames, events, landmarks, captions):
+def save_training_data(training_data_dir, video_path, frame_paths, events, landmarks, captions):
     """
-    Save frames, events, landmarks, and the full journey summary as training data.
-    Frames are not saved as images to save space, but you can extend this to save images if needed.
+    Save frame paths, events, landmarks, and the full journey summary as training data.
     """
     os.makedirs(training_data_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(video_path))[0]
     out_json = os.path.join(training_data_dir, base + '.json')
     data = {
         "video": video_path,
+        "frame_paths": frame_paths,
         "events": events,
         "landmarks": landmarks,
         "journey_summary": captions if isinstance(captions, str) else "\n".join(captions)
