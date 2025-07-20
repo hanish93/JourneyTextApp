@@ -4,7 +4,7 @@ import os
 import sys
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from .app import run_pipeline
+from app import run_pipeline
 
 # Supported video formats for processing
 SUPPORTED_FORMATS = {'.mp4', '.avi', '.mov', '.mkv'}
