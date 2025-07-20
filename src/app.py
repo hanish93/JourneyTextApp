@@ -27,7 +27,7 @@ def load_models(device):
     }
 
 def process_frames(video_path, models):
-    events, landmarks, captions, scenes, ocr_texts, brand_texts = [], [], [], [], [], [], []
+    events, landmarks, captions, scenes, ocr_texts, brand_texts = [], [], [], [], [], []
     prev_gray = None
     landmark_model, landmark_ocr = models["landmark"]
     caption_processor, caption_model = models["caption"]
