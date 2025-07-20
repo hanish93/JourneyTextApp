@@ -40,7 +40,7 @@ def run_pipeline_st(video_path, device=None):
         progress_bar.progress(40)
 
         st.write("Generating captions using BLIP2...")
-        captions, journey_text = generate_captions(frames, device, landmarks=landmarks, is_keyframe=is_keyframe)
+        captions, journey_text = generate_captions(frames, device, is_keyframe=is_keyframe)
         log_container.text(f"Captions generated for {len(captions)} frames.")
         progress_bar.progress(70)
 

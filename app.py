@@ -31,7 +31,7 @@ def run_pipeline(video_path, device=None):
         print(f"[Pipeline] Landmarks detected for {len(landmarks)} frames.")
 
         print("[Pipeline] Generating captions using BLIP2...")
-        captions, journey_text = generate_captions(frames, device, landmarks=landmarks, is_keyframe=is_keyframe)
+        captions, journey_text = generate_captions(frames, device, is_keyframe=is_keyframe)
         print(f"[Pipeline] Captions generated for {len(captions)} frames.")
 
         print("[Pipeline] Summarising journey...")
