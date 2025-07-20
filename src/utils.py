@@ -13,14 +13,23 @@ from transformers import (
 )
 
 # ───────────────────────────────── frame extraction ──────────────────────────
-def extract_frames(video_path, fps: int = 1):
+def extract_frames(video_path, fps: int = 1, out_dir: str = None):
+    import logging
     cap = cv2.VideoCapture(video_path)
     native = cap.get(cv2.CAP_PROP_FPS) or 30
     step   = max(1, round(native / fps))
     idx, ok, img = 0, *cap.read()
+    frame_num = 0
     print("[Frames] Starting extraction …")
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     while ok:
         if idx % step == 0:
+            frame_num += 1
+            if out_dir:
+                frame_path = os.path.join(out_dir, f"frame_{frame_num:04d}.jpg")
+                cv2.imwrite(frame_path, img)
+                logging.info(f"Saved frame {frame_num} to {frame_path}")
             yield img
         ok, img = cap.read()
         idx += 1
