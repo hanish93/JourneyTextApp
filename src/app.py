@@ -9,20 +9,33 @@ from .utils import (
     detect_landmarks_for_frame,
     get_caption_models,
     generate_caption_for_frame,
+    get_scene_model,
+    classify_scene_for_frame,
     generate_long_summary,
     summarise_journey,
 )
 
-def run_pipeline(video_path: str):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\n=== Journey summary for {video_path} (device: {device}) ===\n")
-
-    # Load models once
+def load_models(device):
+    """Load all the models needed for the pipeline."""
+    print("[Models] Loading...")
     landmark_model, landmark_ocr = get_landmark_models(device)
     caption_processor, caption_model = get_caption_models(device)
+    scene_model, scene_classes = get_scene_model(device)
+    print("[Models] Done.")
+    return {
+        "landmark": (landmark_model, landmark_ocr),
+        "caption": (caption_processor, caption_model),
+        "scene": (scene_model, scene_classes),
+    }
 
-    events, landmarks, captions = [], [], []
+def process_frames(video_path, models):
+    """Process each frame of the video and extract features."""
+    events, landmarks, captions, scenes, ocr_texts = [], [], [], [], []
     prev_gray = None
+
+    (landmark_model, landmark_ocr) = models["landmark"]
+    (caption_processor, caption_model) = models["caption"]
+    (scene_model, scene_classes) = models["scene"]
 
     for frame in extract_frames(video_path):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -32,22 +45,36 @@ def run_pipeline(video_path: str):
         events.append(event)
 
         # 2. Landmark Detection
-        landmark = detect_landmarks_for_frame(frame, landmark_model, landmark_ocr)
+        landmark, ocr_text = detect_landmarks_for_frame(frame, landmark_model, landmark_ocr)
         landmarks.append(landmark)
+        ocr_texts.append(ocr_text)
 
         # 3. Caption Generation
         caption = generate_caption_for_frame(frame, caption_processor, caption_model, landmark)
         captions.append(caption)
 
+        # 4. Scene Classification
+        scene = classify_scene_for_frame(frame, scene_model, scene_classes)
+        scenes.append(scene)
+
         prev_gray = gray
 
+    return events, landmarks, captions, scenes, ocr_texts
+
+def run_pipeline(video_path: str):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"\n=== Journey summary for {video_path} (device: {device}) ===\n")
+
+    models = load_models(device)
+    events, landmarks, captions, scenes, ocr_texts = process_frames(video_path, models)
+
     # 4. step table
-    steps = summarise_journey(events, landmarks, captions)
+    steps = summarise_journey(events, landmarks, captions, scenes, ocr_texts)
     for s in steps:
-        print(f"[{s['step']:03}] {s['event']:<11} | {s['description']}")
+        print(f"[{s['step']:03}] {s['event']:<11} | Scene: {s['scene']:<20} | {s['description']}")
 
     # 5. narrative
-    long_story = generate_long_summary(events, landmarks, captions)
+    long_story = generate_long_summary(events, landmarks, captions, scenes, ocr_texts)
     print("\n―――――  Long‑form summary  ―――――\n")
     print(long_story)
     print("\n―――――――――――――――――――――――――――――\n")

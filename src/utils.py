@@ -62,22 +62,79 @@ def get_landmark_models(device):
             cfg="yolov8n.pt"
         )
     model = YOLO(logo_w if os.path.exists(logo_w) else coco_w).to(device)
-    ocr   = easyocr.Reader(["en"], gpu=device.startswith("cuda"))
+    ocr   = easyocr.Reader(["en", "it"], gpu=device.startswith("cuda"))
     return model, ocr
+# ────────────────────────── scene classification ───────────────────────────
+def get_scene_model(device):
+    from torchvision import models, transforms
+    import torch.nn as nn
+
+    model_file = "models/resnet18_places365.pth.tar"
+    if not os.path.exists(model_file):
+        get_or_download_model(
+            "resnet18_places365", os.path.dirname(model_file),
+            url="http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar",
+            cfg="resnet18_places365.pth.tar"
+        )
+
+    model = models.resnet18(num_classes=365)
+    checkpoint = torch.load(model_file, map_location=lambda storage, loc: storage)
+    state_dict = {str.replace(k,'module.',''): v for k,v in checkpoint['state_dict'].items()}
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+
+    # Load category names
+    file_name_category = 'categories_places365.txt'
+    if not os.access(file_name_category, os.W_OK):
+        synset_url = 'https://raw.githubusercontent.com/csailvision/places365/master/categories_places365.txt'
+        os.system('wget ' + synset_url)
+    classes = list()
+    with open(file_name_category) as class_file:
+        for line in class_file:
+            classes.append(line.strip().split(' ')[0][3:])
+
+    return model, classes
+
+def classify_scene_for_frame(frame, model, classes):
+    from torchvision import transforms
+    from PIL import Image
+
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    input_img = transform(img).unsqueeze(0).to(next(model.parameters()).device)
+
+    with torch.no_grad():
+        logit = model(input_img)
+
+    h_x = torch.nn.functional.softmax(logit, 1).data.squeeze()
+    probs, idx = h_x.sort(0, True)
+
+    return classes[idx[0]]
 
 def detect_landmarks_for_frame(frame, model, ocr, conf=0.25):
     r = model(frame, verbose=False, conf=conf)[0]
     if len(r.boxes) == 0:
-        return "none"
+        return "none", ""
     boxes = []
+    ocr_texts = []
     for b in r.boxes:
         cls = model.model.names[int(b.cls[0])]
         conf = float(b.conf[0])
         x1,y1,x2,y2 = map(int, b.xyxy[0])
         crop = frame[y1:y2, x1:x2]
-        txt  = " ".join(t[1] for t in ocr.readtext(crop))
+        read_results = ocr.readtext(crop)
+        txt = " ".join([t[1] for t in read_results])
+        if txt:
+            ocr_texts.append(txt)
         boxes.append(f"{cls} ({conf:.2f}) [{txt}]" if txt else f"{cls} ({conf:.2f})")
-    return ", ".join(boxes)
+    return ", ".join(boxes), " ".join(ocr_texts)
 
 # ──────────────────────────── caption generator (BLIP‑2) ─────────────────────
 def get_caption_models(device):
@@ -98,23 +155,43 @@ def generate_caption_for_frame(frame, processor, model, landmark=None):
     return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
 # ───────────────────────── long‑form narrative generator ─────────────────────
-def generate_long_summary(events, landmarks, captions):
+def generate_long_summary(events, landmarks, captions, scenes, ocr_texts):
     from transformers import pipeline
-    repo = "sshleifer/distilbart-cnn-12-6"
-    summarizer = pipeline("summarization", model=repo)
 
-    ctx_max, out_tok = 1024, 256
-    input_text = " ".join([f"{e}: {c}. Landmark: {l}" for e, c, l in zip(events, captions, landmarks)])
+    # Using a more powerful, instruction-tuned model
+    repo = "mistralai/Mistral-7B-Instruct-v0.2"
+    summarizer = pipeline("text-generation", model=repo, model_kwargs={"torch_dtype": torch.bfloat16}, device_map="auto")
 
-    # Summarize the text
-    summary = summarizer(input_text, max_length=out_tok, min_length=30, do_sample=False)
-    return summary[0]['summary_text']
+    # Create a detailed context string
+    long_text = "\n".join([
+        f"Frame {i+1}: Scene is {scenes[i]}. Event: {events[i]}. Caption: {captions[i]}. Landmark: {landmarks[i]}. Visible text: '{ocr_texts[i]}'"
+        for i in range(len(scenes))
+    ])
+
+    prompt = f"""
+Summarize the following journey from a video in a travel-diary style.
+Use the frame-by-frame details to build a compelling narrative.
+Mention key scenes, activities, and landmarks.
+---
+{long_text}
+---
+Journey Summary:
+"""
+
+    # Generate the summary
+    response = summarizer(prompt, max_new_tokens=300, num_return_sequences=1, temperature=0.7, top_p=0.9)
+    return response[0]['generated_text'].split("Journey Summary:")[1].strip()
 
 # ──────────────────────────── JSON‑friendly helpers ──────────────────────────
-def summarise_journey(events, landmarks, captions):
+def summarise_journey(events, landmarks, captions, scenes, ocr_texts):
     return [
-        {"step": i+1, "event": e, "description": f"{c}. Landmark: {l}"}
-        for i,(e,l,c) in enumerate(zip(events, landmarks, captions))
+        {
+            "step": i + 1,
+            "event": events[i],
+            "scene": scenes[i],
+            "description": f"{captions[i]}. Landmark: {landmarks[i]}. OCR: '{ocr_texts[i]}'"
+        }
+        for i in range(len(events))
     ]
 
 def save_training_data(out_dir, video, frames, events, landmarks, captions):
