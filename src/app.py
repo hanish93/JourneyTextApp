@@ -41,7 +41,7 @@ def process_frames(video_path, models):
             landmarks.append(landmark)
             ocr_texts.append(ocr_text)
             brand_texts.append(brand_text)
-            caption = generate_caption_for_frame(frame, caption_processor, caption_model, landmark, ocr_text, brand_text)
+            caption = generate_caption_for_frame(frame, caption_processor, caption_model, landmark, ocr_text)
             captions.append(caption)
             scene = classify_scene_for_frame(frame, scene_model, scene_classes)
             scenes.append(scene)
