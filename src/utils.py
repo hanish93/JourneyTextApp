@@ -105,7 +105,7 @@ def classify_scene_for_frame(frame, model, classes):
         ]
     )
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    input_img = transform(img).unsqueeze(0).to(next(model.parameters()).device)
+    input_img = transform(img).unsqueeze(0).to(next(model.parameters()).device, dtype=next(model.parameters()).dtype)
     with torch.no_grad():
         logit = model(input_img)
     h_x = torch.nn.functional.softmax(logit, 1).data.squeeze()
