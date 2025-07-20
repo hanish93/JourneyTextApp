@@ -204,15 +204,21 @@ def summarise_journey(events, landmarks, captions):
     Generate a step-by-step summary of the journey.
     """
     summary = []
-    # Ensure all lists have the same length to avoid IndexError
+    # Defensive: log warning if input lists are not the same length
+    if not (len(events) == len(landmarks) == len(captions)):
+        print(f"[Summary] Warning: Input list lengths - events: {len(events)}, landmarks: {len(landmarks)}, captions: {len(captions)}")
     min_len = min(len(events), len(landmarks), len(captions))
     if min_len == 0:
         return []
 
     for i in range(min_len):
-        event = events[i]
-        landmark = landmarks[i]
-        caption = captions[i]
+        try:
+            event = events[i]
+            landmark = landmarks[i]
+            caption = captions[i]
+        except IndexError:
+            print(f"[Summary] IndexError at i={i}: events({len(events)}), landmarks({len(landmarks)}), captions({len(captions)})")
+            break
 
         # Skip entries where an error occurred during processing
         if "error" in [event, landmark, caption] or "no_change" in [event, landmark, caption]:
