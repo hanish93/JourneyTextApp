@@ -132,12 +132,23 @@ def detect_landmarks_for_frame(frame, model, ocr, conf=0.25):
     boxes, ocr_texts = [], []
     for b in r.boxes:
         cls = model.model.names[int(b.cls[0])]
+        # Skip vehicle-related classes
+        if cls.lower() in ["car", "bus", "truck", "motorcycle", "bicycle", "vehicle"]:
+            continue
+        # Focus on relevant classes
+        if cls.lower() not in [
+            "traffic light", "traffic sign", "sign", "stop sign", "street sign",
+            "store", "shop", "market", "mart", "hoarding", "billboard", "plaza", "building", "light"
+        ]:
+            continue
         c   = float(b.conf[0])
         x1,y1,x2,y2 = map(int, b.xyxy[0])
         txt = " ".join(t[1] for t in ocr.readtext(frame[y1:y2, x1:x2]))
         if txt:
             ocr_texts.append(txt)
         boxes.append(f"{cls} ({c:.2f}) [{txt}]" if txt else f"{cls} ({c:.2f})")
+    if not boxes:
+        return "none", ""
     return ", ".join(boxes), " ".join(ocr_texts)
 
 # ───────────── caption model  ──────────────────────────────────────────────
