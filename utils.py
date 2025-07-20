@@ -7,15 +7,14 @@ import numpy as np
 from PIL import Image
 from transformers import BitsAndBytesConfig
 
-def extract_frames(video_path, fps=1, keyframe_threshold=0.1):
+def extract_frames(video_path, fps=1, keyframe_threshold=0.1, batch_size=10):
     """
     Extract frames from the input video at the specified FPS.
-    Returns a list of frames (as numpy arrays) and a list of booleans indicating keyframes.
+    Returns a generator that yields batches of frames (as numpy arrays)
+    and a list of booleans indicating keyframes.
     A frame is considered a keyframe if the Mean Squared Error (MSE) between
     it and the previous frame is above a certain threshold.
     """
-    frames = []
-    is_keyframe = []
     cap = cv2.VideoCapture(video_path)
     frame_rate = cap.get(cv2.CAP_PROP_FPS) or 30
     count = 0
@@ -24,28 +23,33 @@ def extract_frames(video_path, fps=1, keyframe_threshold=0.1):
     print(f"[Frames] Starting frame extraction...")
 
     while success:
-        if int(count % round(frame_rate / fps)) == 0:
-            if prev_frame is not None:
-                # Calculate MSE between current and previous frame
-                mse = np.mean((image - prev_frame) ** 2)
-                if mse > keyframe_threshold:
-                    is_keyframe.append(True)
+        frames_batch = []
+        keyframe_batch = []
+
+        for _ in range(batch_size):
+            if not success:
+                break
+
+            if int(count % round(frame_rate / fps)) == 0:
+                if prev_frame is not None:
+                    mse = np.mean((image - prev_frame) ** 2)
+                    is_keyframe = mse > keyframe_threshold
                 else:
-                    is_keyframe.append(False)
-            else:
-                # First frame is always a keyframe
-                is_keyframe.append(True)
+                    is_keyframe = True
 
-            frames.append(image)
-            prev_frame = image
-            print(f"[Frames] Extracted frame {len(frames)} (Keyframe: {is_keyframe[-1]})")
+                frames_batch.append(image)
+                keyframe_batch.append(is_keyframe)
+                prev_frame = image
+                print(f"[Frames] Extracted frame (Keyframe: {is_keyframe})")
 
-        success, image = cap.read()
-        count += 1
+            success, image = cap.read()
+            count += 1
+
+        if frames_batch:
+            yield frames_batch, keyframe_batch
 
     cap.release()
-    print(f"[Frames] Extraction complete. Total frames: {len(frames)}, Keyframes: {sum(is_keyframe)}")
-    return frames, is_keyframe
+    print(f"[Frames] Extraction complete.")
 
 def detect_events(frames,
                   stride: int = 1,
@@ -120,16 +124,16 @@ def get_or_download_model(model_name, local_dir, download_url=None, hf_repo=None
             urllib.request.urlretrieve(download_url, os.path.join(local_dir, os.path.basename(download_url)))
     return local_dir
 
-def save_training_data(training_data_dir, video_path, frames, events, landmarks, captions):
+def save_training_data(training_data_dir, video_path, frame_paths, events, landmarks, captions):
     """
-    Save frames, events, landmarks, and the full journey summary as training data.
-    Frames are not saved as images to save space, but you can extend this to save images if needed.
+    Save frame paths, events, landmarks, and the full journey summary as training data.
     """
     os.makedirs(training_data_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(video_path))[0]
     out_json = os.path.join(training_data_dir, base + '.json')
     data = {
         "video": video_path,
+        "frame_paths": frame_paths,
         "events": events,
         "landmarks": landmarks,
         "journey_summary": captions if isinstance(captions, str) else "\n".join(captions)
@@ -204,13 +208,12 @@ from model_utils import generate_captions, generate_long_summary
 def summarise_journey(events, landmarks, captions):
     """
     Generate a step-by-step summary of the journey.
+    This function is now more robust and handles lists of different lengths.
     """
     summary = []
-    # Defensive: log warning if input lists are not the same length
-    if not (len(events) == len(landmarks) == len(captions)):
-        print(f"[Summary] Warning: Input list lengths - events: {len(events)}, landmarks: {len(landmarks)}, captions: {len(captions)}")
-    min_len = min(len(events), len(landmarks), len(captions))
-    if min_len == 0:
+    max_len = max(len(events), len(landmarks), len(captions))
+
+    if max_len == 0:
         print("[Summary] No data available for summary generation.")
         return [{
             "step": 0,
@@ -218,23 +221,16 @@ def summarise_journey(events, landmarks, captions):
             "description": "Insufficient data to generate summary."
         }]
 
-    summary = []
-    for i in range(min_len):
-        try:
-            event = events[i]
-            landmark = landmarks[i]
-            caption = captions[i]
-        except IndexError:
-            print(f"[Summary] IndexError at i={i}: events({len(events)}), landmarks({len(landmarks)}), captions({len(captions)})")
-            summary.append({
-                "step": i + 1,
-                "event": "error",
-                "description": "Index out of range during summary generation. Some data may be missing."
-            })
-            break
+    for i in range(max_len):
+        event = events[i] if i < len(events) else "not available"
+        landmark = landmarks[i] if i < len(landmarks) else "not available"
+        caption = captions[i] if i < len(captions) else "not available"
 
-        # Skip entries where an error occurred during processing
+        # Skip entries where an error occurred during processing or data is unavailable
         if "error" in [event, landmark, caption] or "no_change" in [event, landmark, caption]:
+            continue
+
+        if event == "not available" and landmark == "not available" and caption == "not available":
             continue
 
         summary.append({
@@ -242,6 +238,7 @@ def summarise_journey(events, landmarks, captions):
             "event": event,
             "description": f"{caption} Landmark: {landmark}."
         })
+
     if not summary:
         summary.append({
             "step": 0,
