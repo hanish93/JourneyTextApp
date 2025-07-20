@@ -115,9 +115,33 @@ def generate_long_summary(events, landmarks, captions):
     ctx_max, out_tok = 1024, 256
     input_text = " ".join([f"{e}: {c}. Landmark: {l}" for e, c, l in zip(events, captions, landmarks)])
 
-    # Summarize the text
-    summary = summarizer(input_text, max_length=out_tok, min_length=30, do_sample=False)
-    return summary[0]['summary_text']
+    # Split input_text into chunks of <= ctx_max tokens
+    import math
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(repo)
+    input_tokens = tokenizer.encode(input_text)
+    if len(input_tokens) <= ctx_max:
+        summary = summarizer(input_text, max_length=out_tok, min_length=30, do_sample=False)
+        return summary[0]['summary_text']
+    # Chunking
+    chunks = []
+    start = 0
+    while start < len(input_tokens):
+        end = min(start + ctx_max, len(input_tokens))
+        chunk_text = tokenizer.decode(input_tokens[start:end], skip_special_tokens=True)
+        chunks.append(chunk_text)
+        start = end
+    # Summarize each chunk and join
+    summaries = []
+    for chunk in chunks:
+        s = summarizer(chunk, max_length=out_tok, min_length=30, do_sample=False)
+        summaries.append(s[0]['summary_text'])
+    # Optionally, summarize the summaries if there are many
+    if len(summaries) > 1:
+        final_summary = summarizer(" ".join(summaries), max_length=out_tok, min_length=30, do_sample=False)
+        return final_summary[0]['summary_text']
+    else:
+        return summaries[0]
 
 # ──────────────────────────── JSON‑friendly helpers ──────────────────────────
 def summarise_journey(events, landmarks, captions):
