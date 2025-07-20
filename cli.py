@@ -1,14 +1,12 @@
+# cli.py
 import argparse
 from app import run_pipeline
 
 def main():
-    import torch
-    parser = argparse.ArgumentParser(description="Journey Summarisation CLI")
-    parser.add_argument('--video', type=str, required=True, help='Path to input video file')
-    args = parser.parse_args()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-    run_pipeline(args.video, device)
+    p = argparse.ArgumentParser(description="Journey Summarisation CLI")
+    p.add_argument("--video", required=True, help="Path to video file")
+    args = p.parse_args()
+    run_pipeline(args.video)   # run_pipeline now auto-detects device
 
 if __name__ == "__main__":
     main()
