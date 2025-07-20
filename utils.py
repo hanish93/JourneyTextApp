@@ -5,7 +5,7 @@ import easyocr
 from tqdm import tqdm
 import numpy as np
 from PIL import Image
-from transformers import Blip2Processor, Blip2ForConditionalGeneration, BitsAndBytesConfig
+from transformers import BitsAndBytesConfig
 
 def extract_frames(video_path, fps=1, keyframe_threshold=0.1):
     """
@@ -138,16 +138,6 @@ def save_training_data(training_data_dir, video_path, frames, events, landmarks,
         json.dump(data, f, indent=2)
     print(f"[TrainData] Saved training data to {out_json}")
 
-def get_blip2_model_and_processor(model_dir, device):
-    """
-    Utility to load BLIP2 processor and model from a local directory (for training or inference).
-    Ensures the model is downloaded if not present.
-    """
-    repo = "Salesforce/blip2-flan-t5-xl"
-    local_dir = get_or_download_model(repo, model_dir, hf_repo=repo)
-    processor = Blip2Processor.from_pretrained(local_dir)
-    model = Blip2ForConditionalGeneration.from_pretrained(local_dir).to(device)
-    return processor, model
 
 def detect_landmarks(frames, device, is_keyframe, conf_threshold=0.25):
     import os, urllib.request, cv2, easyocr
@@ -207,83 +197,7 @@ def detect_landmarks(frames, device, is_keyframe, conf_threshold=0.25):
     return names
 
 
-# utils.py
-def generate_captions(frames, device, landmarks=None, events=None, is_keyframe=None):
-    """
-    Generate a complete journey summary using the frames, landmarks, and events.
-    This now returns a single narrative summary instead of per-frame captions.
-    """
-    import os, shutil, cv2, torch
-    from PIL import Image
-    from transformers import Blip2Processor, Blip2ForConditionalGeneration
-    from tqdm import tqdm
-
-    if is_keyframe is None:
-        is_keyframe = [True] * len(frames)
-
-    print(f"[BLIP2] Using device: {device}")
-    repo = "Salesforce/blip2-flan-t5-xl"
-    model_id = get_or_download_model(repo, None, hf_repo=repo)
-    processor = Blip2Processor.from_pretrained(model_id, use_fast=True)
-    bnb_cfg = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-    )
-    model = Blip2ForConditionalGeneration.from_pretrained(
-        model_id,
-        quantization_config=bnb_cfg,
-        device_map="auto",
-    ).eval()
-
-    per_frame_captions = []
-    for i, frame in enumerate(tqdm(frames, desc="[BLIP2] Generating captions", unit="frame")):
-        if not is_keyframe[i]:
-            per_frame_captions.append("no_change")
-            continue
-        try:
-            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            # Downscale image to max 512x512 for memory efficiency
-            max_dim = 512
-            if img.width > max_dim or img.height > max_dim:
-                img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-            hint = f"Scene contains: {landmarks[i]}. " if landmarks and i < len(landmarks) and landmarks[i] not in ["none", "no_change"] else ""
-            inputs = processor(images=img, text=hint, return_tensors="pt").to(device)
-            with torch.no_grad():
-                ids = model.generate(**inputs, max_new_tokens=30)
-            caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-            per_frame_captions.append(caption)
-            if device.startswith("cuda"):
-                import torch
-                torch.cuda.empty_cache()
-        except RuntimeError as e:
-            import torch
-            if "out of memory" in str(e) and device.startswith("cuda"):
-                print(f"[BLIP2] CUDA OOM at frame {i}, retrying on CPU...")
-                torch.cuda.empty_cache()
-                try:
-                    model_cpu = model.to("cpu")
-                    inputs_cpu = {k: v.to("cpu") for k, v in inputs.items()}
-                    with torch.no_grad():
-                        ids = model_cpu.generate(**inputs_cpu, max_new_tokens=30)
-                    caption = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-                    per_frame_captions.append(caption)
-                except Exception as e2:
-                    print(f"[BLIP2] Error on CPU for frame {i}: {e2}")
-                    per_frame_captions.append("error")
-                model.to(device)  # Move back to original device
-            else:
-                print(f"[BLIP2] Error generating caption for frame {i}: {e}")
-                per_frame_captions.append("error")
-        except Exception as e:
-            print(f"[BLIP2] Error generating caption for frame {i}: {e}")
-            per_frame_captions.append("error")
-
-    if events is None:
-        events = ["drive"] * len(frames)
-    journey_text = generate_long_summary(events, landmarks or ["none"]*len(frames), per_frame_captions)
-    return per_frame_captions, journey_text
-
-
+from model_utils import generate_captions, generate_long_summary
 
 def summarise_journey(events, landmarks, captions):
     """
@@ -350,92 +264,3 @@ def format_summary_prompt(events, landmarks, captions):
         "Scene highlights:\n- " + '\n- '.join(captions) + "\n\nSummary:"
     )
     return prompt
-
-def generate_long_summary(events, landmarks, captions):
-    """
-    Generate a long-form journey summary (250-400 words) with improved legibility.
-    Cleans and filters captions, formats the prompt in natural language, and ensures prompt fits model context.
-    """
-    repo = os.getenv("JOURNEY_SUMMARY_MODEL", "facebook/bart-large-cnn")
-    cache_dir = os.path.join("models", repo.replace("/", "_"))
-    tokenizer = AutoTokenizer.from_pretrained(repo, cache_dir=cache_dir)
-    model = AutoModelForSeq2SeqLM.from_pretrained(repo, cache_dir=cache_dir)
-    summarizer = pipeline("summarization", model=model, tokenizer=tokenizer, device=-1)
-
-    cleaned_captions = [c for c in [clean_caption(c) for c in captions] if c]
-    if not cleaned_captions:
-        return "Could not generate a summary due to a lack of valid captions."
-
-    cleaned_landmarks = clean_landmarks(landmarks)
-
-    prompt = format_summary_prompt(events, cleaned_landmarks[:10], cleaned_captions[:10])
-
-    # GPT-style: sliding window, dynamic chunking, hierarchical summarization
-    tokenizer_max = getattr(tokenizer, 'model_max_length', 1024)
-    model_max = getattr(model.config, 'max_position_embeddings', 1024)
-    max_input_length = min(tokenizer_max, model_max)
-    overlap_tokens = int(max_input_length * 0.2)  # 20% overlap
-
-    def summarize_prompt(p):
-        # Always ensure prompt is within model's input length
-        tokens = tokenizer.encode(p)
-        if len(tokens) > max_input_length:
-            # Truncate at token level (last-resort, should rarely happen)
-            p = tokenizer.decode(tokens[:max_input_length])
-        output = summarizer(p, max_length=256, min_length=100, do_sample=False)
-        return output[0]['summary_text']
-
-    def chunk_captions_by_tokens(captions, max_tokens, overlap):
-        chunks = []
-        i = 0
-        while i < len(captions):
-            chunk = []
-            j = i
-            while j < len(captions):
-                test_chunk = chunk + [captions[j]]
-                prompt = format_summary_prompt(events[:10], cleaned_landmarks[:10], test_chunk)
-                tokens = tokenizer.encode(prompt)
-                if len(tokens) > max_tokens:
-                    break
-                chunk.append(captions[j])
-                j += 1
-            if not chunk:
-                # Fallback: force at least one caption per chunk
-                chunk = [captions[i]]
-                j = i + 1
-            chunks.append((i, j, chunk))
-            # Sliding window: overlap
-            i = j - overlap if (j - overlap) > i else j
-        return chunks
-
-    def hierarchical_summarize(captions):
-        # Step 1: chunk and summarize
-        chunks = chunk_captions_by_tokens(captions, max_input_length, overlap=2)
-        chunk_summaries = []
-        for start, end, chunk in chunks:
-            batch_prompt = format_summary_prompt(events[:10], cleaned_landmarks[:10], chunk)
-            try:
-                chunk_summary = summarize_prompt(batch_prompt)
-                chunk_summaries.append(chunk_summary)
-            except Exception as e:
-                print(f"[Summary] Error during chunk summarization: {e}")
-                continue
-        # Step 2: if needed, recursively summarize
-        combined = "\n".join(chunk_summaries)
-        combined_tokens = tokenizer.encode(combined)
-        if len(combined_tokens) > max_input_length and len(chunk_summaries) > 1:
-            print("[Summary] Recursively summarizing combined output...")
-            return hierarchical_summarize(chunk_summaries)
-        else:
-            return combined
-
-    prompt_tokens = tokenizer.encode(prompt)
-    if len(prompt_tokens) <= max_input_length:
-        try:
-            return summarize_prompt(prompt)
-        except Exception as e:
-            print(f"[Summary] Error during summarization: {e}")
-            return "Could not generate a summary due to an error."
-    else:
-        return hierarchical_summarize(cleaned_captions)
-
