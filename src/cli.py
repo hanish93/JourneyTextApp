@@ -1,6 +1,6 @@
 # cli.py – print‑only edition
 import argparse
-from app import run_pipeline
+from .app import run_pipeline
 
 def main():
     p = argparse.ArgumentParser(description="Console journey summariser")
