@@ -1,6 +1,6 @@
 # cli.py – print‑only edition
 import argparse
-from src.app import run_pipeline
+from .app import run_pipeline
 
 
 def main():
