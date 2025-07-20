@@ -264,5 +264,3 @@ def format_summary_prompt(events, landmarks, captions):
         "Scene highlights:\n- " + '\n- '.join(captions) + "\n\nSummary:"
     )
     return prompt
-
-
