@@ -198,7 +198,7 @@ def generate_long_summary(events, landmarks, captions, scenes, ocr_texts, sign_s
 
     prompt = (
         "You are an expert journey summarizer. Given the following driving events, detected landmarks, and scene captions, "
-        "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. "
+        "write a detailed, engaging, and coherent long-form summary (200-1000 words) describing the journey. List only high confidence country/region names, "
         "Include navigation, notable landmarks, road/traffic/weather conditions, and overall impressions.\n\n"
         "---\n" + long_text + trailer + "\n---\nJourney Summary:\n"
     )
