@@ -110,25 +110,62 @@ def classify_scene_for_frame(frame, model, classes):
         logit = model(input_img)
     h_x = torch.nn.functional.softmax(logit, 1).data.squeeze()
     probs, idx = h_x.sort(0, True)
+        
+        # Filter for relevant scenes
+    scene_keywords = ["building", "store", "shop", "restaurant", "gas", "station"]
+    for i in range(min(5, len(idx))):
+        scene_class = classes[idx[i]]
+        if any(kw in scene_class.lower() for kw in scene_keywords):
+            return scene_class
     return classes[idx[0]]
 
 def detect_landmarks_for_frame(frame, model, ocr, conf=0.25):
+    # Configuration
+    BUILDING_BRAND_CLASSES = {"sign", "logo", "building", "store", "shop", 
+                             "restaurant", "billboard", "brand", "gas station"}
+    MIN_OCR_WIDTH = 40
+    MIN_OCR_HEIGHT = 20
+    
     r = model(frame, verbose=False, conf=conf)[0]
     if len(r.boxes) == 0:
-        return "none", ""
+        return "none", "", ""
+    
     boxes = []
     ocr_texts = []
+    brand_texts = []
+    
     for b in r.boxes:
         cls = model.model.names[int(b.cls[0])]
         conf = float(b.conf[0])
         x1, y1, x2, y2 = map(int, b.xyxy[0])
+        w, h = x2 - x1, y2 - y1
+        
+        # Skip small regions and irrelevant classes
+        is_building_brand = any(kw in cls.lower() for kw in BUILDING_BRAND_CLASSES)
+        if not is_building_brand and (w < MIN_OCR_WIDTH or h < MIN_OCR_HEIGHT):
+            continue
+            
         crop = frame[y1:y2, x1:x2]
-        read_results = ocr.readtext(crop)
-        txt = " ".join([t[1] for t in read_results])
+        txt = ""
+        
+        # Perform OCR only on relevant areas
+        if w >= MIN_OCR_WIDTH and h >= MIN_OCR_HEIGHT:
+            read_results = ocr.readtext(crop)
+            txt = " ".join([t[1] for t in read_results if t[2] > 0.3])  # Confidence threshold
+            
+        # Classify and store results
+        detection_str = f"{cls} ({conf:.2f})"
         if txt:
+            detection_str += f" [{txt}]"
             ocr_texts.append(txt)
-        boxes.append(f"{cls} ({conf:.2f}) [{txt}]" if txt else f"{cls} ({conf:.2f})")
-    return ", ".join(boxes), " ".join(ocr_texts)
+            
+            # Capture building/brand names
+            if is_building_brand:
+                brand_texts.append(txt)
+                
+        boxes.append(detection_str)
+        
+    return ", ".join(boxes), " ".join(ocr_texts), " | ".join(brand_texts)
 
 def get_caption_models(device):
     repo = "Salesforce/blip-image-captioning-base"
@@ -136,18 +173,25 @@ def get_caption_models(device):
     model = BlipForConditionalGeneration.from_pretrained(repo).to(device)
     return processor, model
 
-def generate_caption_for_frame(frame, processor, model, landmark=None):
+def generate_caption_for_frame(frame, processor, model, landmark=None, brands=None):
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     if max(img.size) > 512:
         res = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
         img.thumbnail((512, 512), res)
+    hint_parts = []
+    if landmark and landmark != "none":
+        hint_parts.append(f"Visible landmark: {landmark}")
+    if brands:
+        hint_parts.append(f"Brand signs: {brands}")
+    
+    hint = ". ".join(hint_parts) if hint_parts else "Driving scene"
     hint = f"Scene contains: {landmark}." if landmark else ""
     ins = processor(images=img, text=hint, return_tensors="pt").to(model.device)
     with torch.no_grad():
         ids = model.generate(**ins, max_new_tokens=30)
     return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
-def generate_long_summary(events, landmarks, captions, scenes, ocr_texts):
+def generate_long_summary(events, landmarks, captions, scenes, ocr_texts, brand_texts):
     from transformers import pipeline
     bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
     repo = "mistralai/Mistral-7B-Instruct-v0.2"
@@ -160,14 +204,14 @@ def generate_long_summary(events, landmarks, captions, scenes, ocr_texts):
     )
     tok = AutoTokenizer.from_pretrained(repo)
     summarizer = pipeline("text-generation", model=model, tokenizer=tok)
-    long_text = "\n".join(
-        [
-            f"Frame {i+1}: Scene is {scenes[i]}. Event: {events[i]}. Caption: {captions[i]}. Landmark: {landmarks[i]}. Visible text: '{ocr_texts[i]}'"
+    long_text = "\n".join([
+            f"Frame {i+1}: Scene: {scenes[i]}. Event: {events[i]}. " 
+            f"Caption: {captions[i]}. Landmarks: {landmarks[i]}. "
+            f"Brands: '{brand_texts[i]}' OCR: '{ocr_texts[i]}'"
             for i in range(len(scenes))
-        ]
-    )
+    ])
     prompt = (
-        "Summarize the following journey from a video in a travel-diary style.\nUse the frame-by-frame details to build a compelling narrative.\nMention key scenes, activities, and landmarks.\n---\n"
+        "Summarize the following journey from a video in a travel-log style.\nUse the frame-by-frame details to build a compelling narrative.\nMention key scenes, activities, names street names and landmarks. Remove any number plate details.\n---\n"
         + long_text
         + "\n---\nJourney Summary:\n"
     )
@@ -181,13 +225,13 @@ def generate_long_summary(events, landmarks, captions, scenes, ocr_texts):
     torch.cuda.empty_cache()
     return response[0]["generated_text"].split("Journey Summary:")[1].strip()
 
-def summarise_journey(events, landmarks, captions, scenes, ocr_texts):
+def summarise_journey(events, landmarks, captions, scenes, ocr_texts, brand_texts):
     return [
         {
             "step": i + 1,
             "event": events[i],
             "scene": scenes[i],
-            "description": f"{captions[i]}. Landmark: {landmarks[i]}. OCR: '{ocr_texts[i]}'",
+            "description": f"{captions[i]}. Landmark: {landmarks[i]}. OCR: '{ocr_texts[i]}'  Brands: {brand_texts[i]}",
         }
         for i in range(len(events))
     ]

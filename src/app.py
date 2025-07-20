@@ -27,7 +27,7 @@ def load_models(device):
     }
 
 def process_frames(video_path, models):
-    events, landmarks, captions, scenes, ocr_texts = [], [], [], [], []
+    events, landmarks, captions, scenes, ocr_texts, brand_texts = [], [], [], [], [], []
     prev_gray = None
     landmark_model, landmark_ocr = models["landmark"]
     caption_processor, caption_model = models["caption"]
@@ -37,27 +37,28 @@ def process_frames(video_path, models):
         event = detect_event_for_frame(prev_gray, gray)
         events.append(event)
         with torch.no_grad():
-            landmark, ocr_text = detect_landmarks_for_frame(frame, landmark_model, landmark_ocr)
+            landmark, ocr_text, brand_text = detect_landmarks_for_frame(frame, landmark_model, landmark_ocr)
             landmarks.append(landmark)
             ocr_texts.append(ocr_text)
-            caption = generate_caption_for_frame(frame, caption_processor, caption_model, landmark)
+            brand_texts.append(brand_text)
+            caption = generate_caption_for_frame(frame, caption_processor, caption_model, landmark, ocr_text, brand_text)
             captions.append(caption)
             scene = classify_scene_for_frame(frame, scene_model, scene_classes)
             scenes.append(scene)
         prev_gray = gray
     torch.cuda.empty_cache()
-    return events, landmarks, captions, scenes, ocr_texts
+    return events, landmarks, captions, scenes, ocr_texts, brand_texts
 
 def run_pipeline(video_path: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\n=== Journey summary for {video_path} (device: {device}) ===\n")
     models = load_models(device)
-    events, landmarks, captions, scenes, ocr_texts = process_frames(video_path, models)
-    steps = summarise_journey(events, landmarks, captions, scenes, ocr_texts)
+    events, landmarks, captions, scenes, ocr_texts, brand_texts = process_frames(video_path, models)
+    steps = summarise_journey(events, landmarks, captions, scenes, ocr_texts, brand_texts)
     for s in steps:
         print(f"[{s['step']:03}] {s['event']:<11} | Scene: {s['scene']:<20} | {s['description']}")
     torch.cuda.empty_cache()
-    long_story = generate_long_summary(events, landmarks, captions, scenes, ocr_texts)
+    long_story = generate_long_summary(events, landmarks, captions, scenes, ocr_texts, brand_texts)
     print("\n―――――  Long‑form summary  ―――――\n")
     print(long_story)
     print("\n―――――――――――――――――――――――――――――\n")
