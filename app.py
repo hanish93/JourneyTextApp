@@ -5,11 +5,10 @@ from utils import (
     extract_frames,
     detect_events,
     detect_landmarks,
-    generate_captions,
     summarise_journey,
-    generate_long_summary,
     save_training_data,
 )
+from model_utils import generate_captions, generate_long_summary
 
 
 def run_pipeline(video_path, device=None):
