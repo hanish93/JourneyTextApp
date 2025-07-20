@@ -160,7 +160,9 @@ def detect_landmarks(frames, device, is_keyframe, conf_threshold=0.25):
     reader = easyocr.Reader(["en"], gpu=device.startswith("cuda"))
 
     names = []
-    for idx, frame in enumerate(tqdm(frames, unit="frame")):
+    min_len = min(len(frames), len(is_keyframe))
+    for idx in range(min_len):
+        frame = frames[idx]
         if not is_keyframe[idx]:
             names.append("no_change")
             continue
@@ -209,8 +211,14 @@ def summarise_journey(events, landmarks, captions):
         print(f"[Summary] Warning: Input list lengths - events: {len(events)}, landmarks: {len(landmarks)}, captions: {len(captions)}")
     min_len = min(len(events), len(landmarks), len(captions))
     if min_len == 0:
-        return []
+        print("[Summary] No data available for summary generation.")
+        return [{
+            "step": 0,
+            "event": "none",
+            "description": "Insufficient data to generate summary."
+        }]
 
+    summary = []
     for i in range(min_len):
         try:
             event = events[i]
@@ -218,6 +226,11 @@ def summarise_journey(events, landmarks, captions):
             caption = captions[i]
         except IndexError:
             print(f"[Summary] IndexError at i={i}: events({len(events)}), landmarks({len(landmarks)}), captions({len(captions)})")
+            summary.append({
+                "step": i + 1,
+                "event": "error",
+                "description": "Index out of range during summary generation. Some data may be missing."
+            })
             break
 
         # Skip entries where an error occurred during processing
@@ -228,6 +241,12 @@ def summarise_journey(events, landmarks, captions):
             "step": i + 1,
             "event": event,
             "description": f"{caption} Landmark: {landmark}."
+        })
+    if not summary:
+        summary.append({
+            "step": 0,
+            "event": "none",
+            "description": "No valid summary steps generated due to data issues."
         })
     return summary
 
