@@ -88,7 +88,7 @@ def cap_img(img, cap_pipe, hint: str = "") -> str:
 
     prompt = hint if hint else "Describe the scene briefly."
     # image‑text‑to‑text expects a dict with both fields
-    res = cap_pipe({"image": pil, "text": prompt}, max_new_tokens=30)[0]
+    res = cap_pipe({"images": pil, "text": prompt}, max_new_tokens=30)[0]
     return res["generated_text"]
 
 
