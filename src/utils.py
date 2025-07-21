@@ -1,4 +1,4 @@
-# utils.py  — stable diary helpers (YOLO + InstructBLIP + FLAN‑T5)
+# utils.py  —  High‑signal video‑to‑diary helpers
 import os, cv2, urllib.request, torch, easyocr, numpy as np
 from itertools import islice
 from PIL import Image
@@ -7,13 +7,24 @@ from transformers import (
     pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
 )
 
-KEEP = {"traffic light","stop sign","street sign","traffic sign",
-        "bench","fire hydrant","parking meter","clock","potted plant"}
-DYNAMIC = {"car","truck","bus","motorcycle","bicycle","person","dog"}
+KEEP = {
+    "traffic light", "stop sign", "street sign", "traffic sign",
+    "bench", "fire hydrant", "parking meter", "clock", "potted plant",
+}
+DYNAMIC = {"car", "truck", "bus", "motorcycle", "bicycle", "person", "dog"}
 
-# — Downloader helper —
-def fetch(d,url,f): os.makedirs(d,exist_ok=True); p=os.path.join(d,f)
-  ; 0 if url and os.path.exists(p) else urllib.request.urlretrieve(url,p); return p
+# ─── simple downloader helper (safe indentation) ───────────────────────
+def fetch(dst_dir: str, url: str, fname: str) -> str:
+    """
+    Ensure `dst_dir/fname` exists; download from `url` if missing.
+    Returns the full path.
+    """
+    os.makedirs(dst_dir, exist_ok=True)
+    path = os.path.join(dst_dir, fname)
+    if url and not os.path.exists(path):
+        urllib.request.urlretrieve(url, path)
+    return path
+
 
 # — Frame sampler (1 fps) —
 def frames(vid,fps=1):
