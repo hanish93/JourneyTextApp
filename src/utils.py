@@ -66,25 +66,31 @@ def landmarks(img,y,o,conf=0.25):
         if t:names.append(t)
     return names
 
-# — Captioner: InstructBLIP T5‑XL —
+# ─── captioner: InstructBLIP‑FLAN‑T5‑XL ────────────────────────────────
 def load_cap(dev):
-    return pipeline("image-to-text",
+    """
+    Returns a HF pipeline that accepts {'image': PIL, 'text': prompt}
+    and produces a caption.
+    """
+    return pipeline(
+        "image-text-to-text",
         model="Salesforce/instructblip-flan-t5-xl",
-        device_map="auto" if dev.startswith("cuda") else None)
+        device_map="auto" if dev.startswith("cuda") else None,
+    )
+
 
 # ─── caption a single frame with InstructBLIP ──────────────────────────
+# ─── caption a single frame ────────────────────────────────────────────
 def cap_img(img, cap_pipe, hint: str = "") -> str:
-    """
-    Returns a one‑sentence caption.  `hint` (landmark list) is used as the
-    prompt if provided; otherwise we fall back to a generic query.
-    """
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     if max(pil.size) > 640:
         pil.thumbnail((640, 640), Image.Resampling.LANCZOS)
 
     prompt = hint if hint else "Describe the scene briefly."
-    result = cap_pipe(pil, prompt=prompt, max_new_tokens=30)[0]["generated_text"]
-    return result
+    # image‑text‑to‑text expects a dict with both fields
+    res = cap_pipe({"image": pil, "text": prompt}, max_new_tokens=30)[0]
+    return res["generated_text"]
+
 
 
 # — Summariser: FLAN‑T5‑large on CPU —
