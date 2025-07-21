@@ -1,31 +1,30 @@
 import cv2, torch, pathlib, logging
-from utils import sample_frames, motion, load_detectors, static_landmarks, \
-                  load_captioner, summarise
+from utils import frames, move, load_det, landmarks, load_cap, cap_img, diary, DYNAMIC
 
-def process(video, models, dev, fps=1):
-    caps=[]; whitelist=set(); prev=None
-    for f in sample_frames(video,fps):
-        gray=cv2.cvtColor(f,cv2.COLOR_BGR2GRAY)
-        verb=motion(prev,gray); prev=gray
-        names=static_landmarks(f,models["yolo"],models["ocr"])
-        whitelist.update(names)
-        cap=models["cap"](f,max_new_tokens=30)[0]["generated_text"]
-        # strip dynamic words
-        cap=" ".join(w for w in cap.split() if w.lower() not in {"a","an","the"}|DYNAMIC)
-        caps.append(f"I {verb} and {cap.lower()}")
-    return summarise(caps,whitelist)
+def run_clip(path, models, dev):
+    cap_pipe=models["cap"]; yolo,ocr=models["det"]
+    prev=None; sentences=[]; wl=set()
+
+    for f in frames(path,fps=1):
+        g=cv2.cvtColor(f,cv2.COLOR_BGR2GRAY)
+        verb=move(prev,g); prev=g
+        names=landmarks(f,yolo,ocr); wl.update(names)
+        cap=cap_img(f,cap_pipe," ".join(names) if names else "")
+        cap=" ".join(w for w in cap.split() if w.lower() not in DYNAMIC)
+        sentences.append(f"I {verb} and {cap.lower()}")
+
+    return diary(sentences,wl)
 
 def run(target):
     dev="cuda" if torch.cuda.is_available() else"cpu"
-    yolo,ocr=load_detectors(dev); captioner=load_captioner(dev)
-    models=dict(yolo=yolo,ocr=ocr,cap=captioner)
-    p=pathlib.Path(target); files=[p] if p.is_file() else sorted(p.glob("*.mp4"))
-    for v in files:
+    yolo,ocr=load_det(dev); cap=load_cap(dev)
+    models=dict(det=(yolo,ocr),cap=cap)
+    p=pathlib.Path(target); vids=[p] if p.is_file() else sorted(p.glob("*.mp4"))
+    for v in vids:
         print("\n———",v.name,"———")
-        print(process(str(v),models,dev))
+        print(run_clip(str(v),models,dev))
 
-# legacy alias
-run_pipeline=run
+run_pipeline=run   # cli entry
 
 if __name__=="__main__":
     import argparse, warnings
