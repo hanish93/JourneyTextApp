@@ -1,48 +1,54 @@
-import torch, cv2, logging, pathlib
+import cv2, torch, pathlib, logging
 from utils import (
-    extract_frames, detect_event_for_frame,
-    get_landmark_models, detect_landmarks_for_frame,
-    get_caption_models, generate_caption_for_frame,
-    get_scene_model, classify_scene_for_frame,
-    generate_long_summary
+    extract_frames, detect_event,
+    load_detectors, get_landmarks,
+    load_captioner, caption_frame,
+    summarise_journey
 )
 
-def load_models(device):
-    (obj,_), ocr = get_landmark_models(device)
-    cap_proc, cap_mod = get_caption_models(device)
-    scene_mod, scene_cls, scene_tf = get_scene_model(device)
-    return dict(obj=obj, ocr=ocr,
-                cap_proc=cap_proc, cap_mod=cap_mod,
-                scene_mod=scene_mod, scene_cls=scene_cls, scene_tf=scene_tf)
+def process_clip(path, models, device, fps=1):
+    ev, caps = [], []
+    whitelist = set()
 
-def process(video, M):
-    ev,lm,cap,scn,ocr = [],[],[],[],[]
-    prev=None
-    for f in extract_frames(video):
-        g=cv2.cvtColor(f,cv2.COLOR_BGR2GRAY)
-        ev.append(detect_event_for_frame(prev,g))
-        lmk,txt=detect_landmarks_for_frame(f,M["obj"],M["ocr"])
-        lm.append(lmk); ocr.append(txt)
-        cap.append(generate_caption_for_frame(f,M["cap_proc"],M["cap_mod"],lmk))
-        scn.append(classify_scene_for_frame(f,M["scene_mod"],M["scene_cls"],M["scene_tf"]))
-        prev=g
-    return ev,lm,cap,scn,ocr,{"shop":{},"building":{},"other":{}}
+    for f in extract_frames(path, fps=fps):
+        gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        ev.append(detect_event(process_clip.prev_gray, gray))
+        process_clip.prev_gray = gray
 
-def run(video_or_dir):
-    device="cuda" if torch.cuda.is_available() else"cpu"
-    M=load_models(device)
-    p=pathlib.Path(video_or_dir)
-    files=[p] if p.is_file() else sorted(p.glob("*.mp4"))
+        names = get_landmarks(f, models["det"], models["ocr"])
+        whitelist.update(names)
+        caps.append(caption_frame(
+            f, models["cap_proc"], models["cap_mod"],
+            " ".join(names) if names else ""
+        ))
+
+    sentences = [f"I {e.replace('_',' ')} and {c.lower()}" for e,c in zip(ev,caps)]
+    return summarise_journey(sentences, sorted(whitelist))
+
+process_clip.prev_gray = None   # static attribute
+
+def run(target):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    det, ocr = load_detectors(device)
+    cap_proc, cap_mod = load_captioner(device)
+    models = dict(det=det, ocr=ocr, cap_proc=cap_proc, cap_mod=cap_mod)
+
+    p = pathlib.Path(target)
+    files = [p] if p.is_file() else sorted(p.glob("*.mp4"))
+
     for vid in files:
-        ev,lm,cap,scn,ocr,stats=process(str(vid),M)
-        print(f"\n——— {vid} ——")
-        print(generate_long_summary(ev,lm,cap,scn,ocr,stats),"\n")
+        process_clip.prev_gray = None  # reset per video
+        print("\n———", vid, "———")
+        print(process_clip(str(vid), models, device))
 
+# legacy alias for cli.py
 run_pipeline = run
 
-if __name__=="__main__":
+if __name__ == "__main__":
     import argparse, warnings
-    warnings.filterwarnings("ignore",category=UserWarning)
+    warnings.filterwarnings("ignore", category=UserWarning)
     logging.getLogger("ultralytics").setLevel(logging.ERROR)
-    arg=argparse.ArgumentParser(); arg.add_argument("--video",required=True)
+    arg = argparse.ArgumentParser()
+    arg.add_argument("--video", required=True,
+                     help="Path to .mp4 or directory of .mp4 files")
     run(arg.parse_args().video)
