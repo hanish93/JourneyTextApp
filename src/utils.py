@@ -26,14 +26,20 @@ def fetch(dst_dir: str, url: str, fname: str) -> str:
     return path
 
 
-# — Frame sampler (1 fps) —
-def frames(vid,fps=1):
-    c=cv2.VideoCapture(vid); nat=c.get(cv2.CAP_PROP_FPS)or30
-    step=max(1,round(nat/fps)); i,ok,img=0,*c.read()
+# ─── Frame sampler (1 fps) ────────────────────────────────────────────
+def frames(video_path, fps=1):
+    cap = cv2.VideoCapture(video_path)
+    nat = cap.get(cv2.CAP_PROP_FPS) or 30          # ← space before/after “or”
+    step = max(1, round(nat / fps))
+
+    idx, ok, img = 0, *cap.read()
     while ok:
-        if i%step==0: yield img
-        ok,img=c.read(); i+=1
-    c.release()
+        if idx % step == 0:
+            yield img
+        ok, img = cap.read()
+        idx += 1
+    cap.release()
+
 
 # — Motion verb —
 def move(prev,cur,dx=1.5,stop=0.2):
