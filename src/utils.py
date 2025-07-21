@@ -72,13 +72,20 @@ def load_cap(dev):
         model="Salesforce/instructblip-flan-t5-xl",
         device_map="auto" if dev.startswith("cuda") else None)
 
-def cap_img(img,cap_pipe,hint=""):
-    pil=Image.fromarray(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
-    if max(pil.size)>640: pil.thumbnail((640,640),Image.Resampling.LANCZOS)
-    res=cap_pipe(pil,max_new_tokens=30,
-                 generate_kwargs={"temperature":0.2,"repetition_penalty":1.1},
-                 prompt=hint or None)[0]["generated_text"]
-    return res
+# ─── caption a single frame with InstructBLIP ──────────────────────────
+def cap_img(img, cap_pipe, hint: str = "") -> str:
+    """
+    Returns a one‑sentence caption.  `hint` (landmark list) is used as the
+    prompt if provided; otherwise we fall back to a generic query.
+    """
+    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    if max(pil.size) > 640:
+        pil.thumbnail((640, 640), Image.Resampling.LANCZOS)
+
+    prompt = hint if hint else "Describe the scene briefly."
+    result = cap_pipe(pil, prompt=prompt, max_new_tokens=30)[0]["generated_text"]
+    return result
+
 
 # — Summariser: FLAN‑T5‑large on CPU —
 tok=AutoTokenizer.from_pretrained("google/flan-t5-large")
