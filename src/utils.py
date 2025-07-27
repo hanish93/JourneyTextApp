@@ -189,38 +189,56 @@ def summarise_journey(events,lm,cap,scn,ocr,signals):
         })
     return rows
 
-def generate_long_summary(events,*a,**k):
-    sigs=[e for e in events if e not in ("drive","stop")]
-    clean=[]
-    for e in sigs:
-        if not clean or clean[-1]!=e:
-            clean.append(e)
-    if clean and "green" in clean[0]:
-        summ="I drove straight after the light turned green"
-        rem=clean[1:]
-    else:
-        summ="I drove straight"
-        rem=clean
-    i=0
-    while i<len(rem):
-        e=rem[i]
-        if e.startswith("passed "):
-            shops=[]
-            while i<len(rem) and rem[i].startswith("passed "):
-                shops.append(rem[i][7:])
-                i+=1
-            if len(shops)==1:
-                summ+=f" and passed {shops[0]}"
-            else:
-                summ+=" and passed "+", ".join(shops[:-1])+f" and {shops[-1]}"
-        elif "right" in e:
-            summ+=" and took a slight right"
-            while i<len(rem) and "right" in rem[i]:
-                i+=1
-        elif "left" in e:
-            summ+=" and turned left"
-            while i<len(rem) and "left" in rem[i]:
-                i+=1
-        else:
-            i+=1
-    return summ+" and continued straight."
+def generate_long_summary(events, signals, *a, **k):
+    """
+    events:  list of "drive", "turn_left", "passed <X>", etc.
+    signals: parallel list of None, "red" or "green"
+    """
+    parts = []
+    stopped = False
+
+    for ev, sig in zip(events, signals):
+        # 1) signal events
+        if sig == "red" and not stopped:
+            parts.append("stopped at the red light")
+            stopped = True
+            continue
+        if sig == "green" and stopped:
+            parts.append("when it turned green, I drove on")
+            stopped = False
+            continue
+
+        # 2) motion / passes
+        if ev == "drive":
+            # skip raw drives when we have nothing else
+            continue
+        if ev.startswith("passed "):
+            loc = ev[len("passed "):]
+            parts.append(f"passed {loc}")
+            continue
+        if ev == "turn_left":
+            parts.append("turned left")
+            continue
+        if ev == "turn_right":
+            parts.append("took a slight right")
+            continue
+        if ev == "stop":
+            # optional: treat as a brief pause
+            parts.append("paused briefly")
+            continue
+
+    # ensure it starts with driving
+    if parts and not parts[0].startswith("stopped"):
+        parts.insert(0, "drove straight")
+
+    # join
+    journey = parts[0].capitalize()
+    for p in parts[1:]:
+        journey += " and " + p
+
+    # finish
+    if not journey.endswith("."):
+        journey += "."
+
+    return journey
+
