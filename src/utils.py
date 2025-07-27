@@ -182,71 +182,64 @@ def generate_caption_for_frame(img, proc, mod, landmarks):
 # ─── Flan‑T5 long summary ─────────────────────────────────────────────
 # src/utils.py  — replace your existing generate_long_summary with this:
 
+# src/utils.py
 def generate_long_summary(events, *args, **kwargs):
     """
-    Build a single first‑person sentence from the cleaned event list.
-    Events should be one of:
+    Build one concise first-person sentence from your event list.
+    `events` should include only:
+      - 'the signal turned green'
       - 'passed {Label}'
       - 'turn_left'
       - 'turn_right'
-      - 'stop'             (we treat as red light stop)
-      - 'the signal turned green'
+      - optionally 'stop' (we ignore it)
+      - we ignore 'drive'
     """
-    # 1) Remove all 'drive' entries
-    sigs = [e for e in events if e != "drive"]
+    # 1) Filter out unneeded
+    sigs = [e for e in events if e not in ("drive","stop")]
 
-    # 2) Collapse adjacent duplicates
+    # 2) Collapse consecutive duplicates
     clean = []
     for e in sigs:
         if not clean or clean[-1] != e:
             clean.append(e)
 
-    # 3) Map each event to a phrase
-    phrase_map = []
-    for e in clean:
-        if e.startswith("passed "):
-            # e == "passed CREMA" -> "passed CREMA"
-            phrase_map.append(e)
-        elif e == "turn_left":
-            phrase_map.append("took a slight left")
-        elif e == "turn_right":
-            phrase_map.append("took a slight right")
-        elif e == "stop":
-            phrase_map.append("stopped at a red light")
-        elif e == "the signal turned green":
-            phrase_map.append("the light turned green")
-        else:
-            # catch-all: just use the raw event
-            phrase_map.append(e)
-
-    # 4) Build the final sentence
-    if not phrase_map:
-        return "I drove straight."
-
-    # Start with "I"
-    # First event: if it's a light turning green, say "after the light turned green I"
-    parts = []
-    for idx, ph in enumerate(phrase_map):
-        # if it's the green light event, we want: "after the light turned green, I"
-        if ph == "the light turned green":
-            parts.append("after the light turned green, I drove on")
-        else:
-            parts.append(ph)
-
-    # Now join with " and "
-    body = " and ".join(parts)
-
-    # Ensure it starts with "I "
-    if body.startswith("passed") or body.startswith("stopped") or body.startswith("took"):
-        summary = "I " + body
+    # 3) Split off everything after the first green
+    summary = "I drove straight"
+    if "the signal turned green" in clean:
+        summary += " after the light turned green"
+        idx = clean.index("the signal turned green") + 1
+        rest = clean[idx:]
     else:
-        summary = body.capitalize()
+        rest = clean
 
-    # End with a period
-    if not summary.endswith("."):
-        summary += "."
+    # 4) Walk through `rest` and build phrases
+    i = 0
+    while i < len(rest):
+        e = rest[i]
+        if e.startswith("passed "):
+            # collect all consecutive passed
+            labels = []
+            while i < len(rest) and rest[i].startswith("passed "):
+                labels.append(rest[i][len("passed "):])
+                i += 1
+            # join them
+            summary += " and passed " + " and ".join(labels)
+        elif e == "turn_right":
+            summary += ", then took a slight right"
+            i += 1
+        elif e == "turn_left":
+            summary += ", then turned left"
+            i += 1
+        else:
+            # safety fallback
+            i += 1
 
-    return summary
+    # 5) Finish
+    summary += " and continued straight."
+
+    # Capitalize first letter
+    return summary[0].upper() + summary[1:]
+
 
 
 
