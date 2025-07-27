@@ -59,12 +59,11 @@ def detect_signal_color(roi) -> str:
     # red masks
     r1, r2 = np.array([0,70,50]), np.array([10,255,255])
     r3, r4 = np.array([170,70,50]), np.array([180,255,255])
-    red_mask = cv2.inRange(hsv, r1, r2) | cv2.inRange(hsv, r3, r4)
-    red = int(cv2.countNonZero(red_mask))
+    red = int(cv2.countNonZero(cv2.inRange(hsv, r1, r2))
+            + cv2.countNonZero(cv2.inRange(hsv, r3, r4)))
     # green mask
     g1, g2 = np.array([40,40,40]), np.array([90,255,255])
-    green_mask = cv2.inRange(hsv, g1, g2)
-    green = int(cv2.countNonZero(green_mask))
+    green = int(cv2.countNonZero(cv2.inRange(hsv, g1, g2)))
     if green > red and green > 50:
         return "green"
     if red > green and red > 50:
