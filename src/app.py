@@ -28,21 +28,22 @@ def run_clip(path: str, model, dev: str):
     if os.path.isdir(path):
         imgs = sorted(glob(os.path.join(path, "*.jpg")))
         if imgs:
-            frames_iter = (cv2.imread(f) for f in imgs)
+            it = (cv2.imread(f) for f in imgs)
         else:
             vids = sorted(glob(os.path.join(path, "*.mp4")))
             if not vids:
                 raise FileNotFoundError(f"No .jpg or .mp4 under {path}")
+            # recurse on videos
             return "\n\n".join(run_clip(v, model, dev) for v in vids)
     else:
-        frames_iter = frames(path, fps=1)
+        it = frames(path, fps=1)
 
     prev_gray = None
     seen_signs = set()
     prev_light = None
     timeline = []
 
-    for idx, img in enumerate(frames_iter, start=1):
+    for idx, img in enumerate(it, start=1):
         if img is None:
             continue
 
@@ -51,8 +52,8 @@ def run_clip(path: str, model, dev: str):
         prev_gray = gray
 
         # YOLO inference
-        res = model(img, conf=0.25, verbose=False)[0]
-        for box in res.boxes:
+        r = model(img, conf=0.25, verbose=False)[0]
+        for box in r.boxes:
             cls = model.model.names[int(box.cls[0])]
             x1,y1,x2,y2 = map(int, box.xyxy[0])
             crop = img[y1:y2, x1:x2]
@@ -63,23 +64,23 @@ def run_clip(path: str, model, dev: str):
                     timeline.append(f"signal_{color}")
                 prev_light = color
             else:
-                # must be one of your custom sign classes
+                # your pre‑labeled shop/sign class
                 if cls not in seen_signs:
                     seen_signs.add(cls)
                     timeline.append(f"sign_{cls}")
 
         timeline.append(verb)
-        print(f"[frame {idx:03d}] verb={verb:10s} light={prev_light or '-':6s}"
-              f" new_signs={seen_signs}")
+        print(f"[frame {idx:03d}] verb={verb:10s}"
+              f" light={prev_light or '-':6s} signs={seen_signs}")
 
-    # map events to phrases
+    # mapping → English
     mapping = {
-        "signal_green":"the signal turned green",
-        "signal_red":"stopped at the red light",
-        "drive":"drove straight",
-        "stop":"came to a stop",
-        "turn_right":"took a slight right",
-        "turn_left":"took a slight left",
+        "signal_green": "the signal turned green",
+        "signal_red":   "stopped at the red signal",
+        "drive":        "drove straight",
+        "stop":         "came to a stop",
+        "turn_right":   "took a slight right",
+        "turn_left":    "took a slight left",
     }
     parts = []
     for ev in timeline:
@@ -104,8 +105,8 @@ if __name__ == "__main__":
 
     p = argparse.ArgumentParser(description="Journey summariser")
     p.add_argument("--input", "-i", required=True,
-                   help="Folder of JPG frames or single MP4")
+                   help="Folder of JPG frames or a single MP4")
     p.add_argument("--yolo-model", "-m", default=None,
-                   help="Path to your custom-trained YOLOv8 .pt file")
+                   help="Path to your custom YOLOv8 .pt (or omit for default)")
     args = p.parse_args()
     run(args.input, args.yolo_model)
