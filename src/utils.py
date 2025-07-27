@@ -123,6 +123,7 @@ def diary(lines, whitelist, max_lines=40):
         guard = "Only these place names may appear: " + ", ".join(sorted(whitelist)) + ".\n"
     else:
         guard = "No place names detected—do NOT invent any.\n"
+
     prompt = (
         "Write 3‑4 simple first‑person sentences about the drive. "
         "Ignore people/vehicles; no headings.\n"
