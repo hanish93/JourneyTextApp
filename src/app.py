@@ -1,25 +1,30 @@
 # src/app.py — glue everything together
-import os, cv2, torch, pathlib, logging
+
+import os
+import cv2
+import torch
+import logging
 from glob import glob
 
-from .utils import frames, move, load_det, landmarks, load_cap, cap_img, diary, DYNAMIC
+from utils import frames, move, load_det, landmarks, load_cap, cap_img, diary, DYNAMIC
+
 
 def run_clip(path, models, dev):
-    # if it's a folder of images
+    # If directory of images
     if os.path.isdir(path) and any(path.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg"]):
         imgs = sorted(glob(os.path.join(path, "*.[pj][pn]g")))
         frame_iter = (cv2.imread(im) for im in imgs)
-    # if it's a folder of .mp4 videos
+    # If directory of videos
     elif os.path.isdir(path):
-        summaries = [run_clip(v, models, dev) for v in sorted(glob(os.path.join(path, "*.mp4")))]
-        return "\n\n".join(summaries)
+        return "\n\n".join(run_clip(v, models, dev) for v in sorted(glob(os.path.join(path, "*.mp4"))))
     else:
         frame_iter = frames(path, fps=1)
 
-    sentences, whitelist = [], set()
     yolo, ocr = models["det"]
     cap_pipe = models["cap"]
     prev = None
+    sentences = []
+    whitelist = set()
 
     for f in frame_iter:
         if f is None:
@@ -31,9 +36,9 @@ def run_clip(path, models, dev):
         names = landmarks(f, yolo, ocr)
         whitelist.update(names)
 
-        cap = cap_img(f, cap_pipe, " ".join(names) if names else "")
-        cap = " ".join(w for w in cap.split() if w.lower() not in DYNAMIC)
-        sentences.append(f"I {verb} and {cap.lower()}")
+        caption = cap_img(f, cap_pipe, " ".join(names) if names else "")
+        caption = " ".join(w for w in caption.split() if w.lower() not in DYNAMIC)
+        sentences.append(f"I {verb} and {caption.lower()}")
 
     return diary(sentences, whitelist)
 
@@ -55,7 +60,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Console journey summariser")
     parser.add_argument(
         "--input", "-i", required=True,
-        help="Path to a .mp4 file, directory of .mp4s, or directory of JPG/PNG frames"
+        help="Path to a .mp4 file, folder of .mp4s, or folder of JPG/PNG frames"
     )
     parser.add_argument(
         "--yolo-model", "-m", default=None,
