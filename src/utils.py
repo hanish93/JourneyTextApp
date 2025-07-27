@@ -40,9 +40,6 @@ def move(prev_gray, curr_gray, dx=1.5, stop_thr=0.2):
     return "drive"
 
 def load_yolo(dev: str, model_path: str = None):
-    """
-    Load YOLOv8 model (custom or default yolov8n).
-    """
     if model_path:
         model = YOLO(model_path).to(dev).half()
     else:
@@ -55,12 +52,8 @@ def load_yolo(dev: str, model_path: str = None):
     return model
 
 def detect_signal_color(roi):
-    """
-    Return "red" or "green" if the majority color in this traffic‑light ROI,
-    else None.
-    """
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    # red mask
+    # red masks
     r1, r2 = np.array([0,70,50]), np.array([10,255,255])
     r3, r4 = np.array([170,70,50]), np.array([180,255,255])
     red = int(cv2.countNonZero(cv2.inRange(hsv, r1, r2))
@@ -75,13 +68,9 @@ def detect_signal_color(roi):
     return None
 
 def load_ocr():
-    """Get an EasyOCR Reader once."""
     return easyocr.Reader(["en"], gpu=cv2.cuda.getCudaEnabledDeviceCount()>0)
 
 def ocr_signs(img, ocr_reader, conf=0.3):
-    """
-    OCR full‑frame, return list of text strings ≥3 chars with prob≥conf.
-    """
     raw = ocr_reader.readtext(img, detail=1)
     seen = []
     for _, txt, prob in raw:
