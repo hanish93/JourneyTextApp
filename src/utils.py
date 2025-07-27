@@ -1,42 +1,24 @@
 import os
 import cv2
 import urllib.request
-import json
 import torch
 import easyocr
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from transformers import (
-    BlipProcessor, BlipForConditionalGeneration,
-    BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
-)
+from transformers import BlipProcessor, BlipForConditionalGeneration, pipeline
 
-# ─── static configs ─────────────────────────────────────────────────────
+# ─── STATIC CONFIG ───────────────────────────────────────────────────────
 STATIC_YOLO = {
     "traffic light", "stop sign", "street sign", "traffic sign",
     "bench", "fire hydrant", "parking meter", "clock", "potted plant",
 }
-DYNAMIC = {"car","person","truck","bus","motorcycle","bicycle","dog"}
+# Words to strip out of BLIP captions
+DYNAMIC = {"car", "person", "truck", "bus", "motorcycle", "bicycle", "dog"}
 
-# ─── helper to decide if OCR text is worth keeping ─────────────────────
-def salient(txt):
-    words = txt.split()
-    return len(words) >= 2 or (words and words[0][0].isupper())
-
-def kind_of(txt):
-    l = txt.lower()
-    if any(x in l for x in ["shop","store","express","mart","market"]):
-        return "shop"
-    if any(x in l for x in [
-        "office","tower","building","center","plaza","hotel"
-    ]):
-        return "building"
-    return "other"
-
-# ─── extract a frame‑per‑second or read a folder of JPGs ───────────────
+# ─── FRAME EXTRACTION ────────────────────────────────────────────────────
 def extract_frames(path, fps=1):
-    # directory of images?
+    """Yield one frame per second from a video, or all .jpg in a folder."""
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
             if fn.lower().endswith(".jpg"):
@@ -45,40 +27,42 @@ def extract_frames(path, fps=1):
                     yield img
         return
 
-    # otherwise treat as video
     cap = cv2.VideoCapture(path)
     nat = cap.get(cv2.CAP_PROP_FPS) or 30
     step = max(1, round(nat / fps))
     idx, ok, img = 0, *cap.read()
-    print("[Frames] Starting extraction …")
     while ok:
         if idx % step == 0:
             yield img
         ok, img = cap.read()
         idx += 1
     cap.release()
-    print("[Frames] Done.")
 
-# ─── simple motion detection → drive/stop/turn ─────────────────────────
-def detect_event_for_frame(prev, cur, dx=1.5, stop_thr=0.2):
-    if prev is None:
+# ─── MOTION DETECTION ───────────────────────────────────────────────────
+def detect_event_for_frame(prev_gray, cur_gray, dx_thresh=3.0, stop_thresh=0.2):
+    """
+    Optical‐flow motion. Returns one of:
+      'drive', 'stop', 'turn_left', 'turn_right'
+    Uses a higher dx_thresh and same stop_thresh.
+    """
+    if prev_gray is None:
         return "drive"
     flow = cv2.calcOpticalFlowFarneback(
-        prev, cur, None,
+        prev_gray, cur_gray, None,
         pyr_scale=0.5, levels=3, winsize=15,
         iterations=3, poly_n=5, poly_sigma=1.2, flags=0
     )
     dxm = flow[...,0].mean()
     mag = np.linalg.norm(flow, axis=2).mean()
-    if mag < stop_thr:
+    if mag < stop_thresh:
         return "stop"
-    if dxm > dx:
+    if dxm > dx_thresh:
         return "turn_right"
-    if dxm < -dx:
+    if dxm < -dx_thresh:
         return "turn_left"
     return "drive"
 
-# ─── download helper ───────────────────────────────────────────────────
+# ─── DOWNLOAD HELPER ────────────────────────────────────────────────────
 def fetch(name, d, url, fname):
     os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, fname)
@@ -86,16 +70,16 @@ def fetch(name, d, url, fname):
         urllib.request.urlretrieve(url, dst)
     return dst
 
-# ─── YOLO + EasyOCR for landmarks ──────────────────────────────────────
+# ─── YOLO + OCR FOR LANDMARKS ───────────────────────────────────────────
 def get_landmark_models(device):
-    yolo_path = fetch(
+    yolo_pt = fetch(
         "yolov8n", "models",
         "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
         "yolov8n.pt"
     )
-    obj = YOLO(yolo_path).to(device).half()
-    sign_path = "models/yolov8_signs.pt"
-    sign = YOLO(sign_path).to(device).half() if os.path.exists(sign_path) else None
+    obj = YOLO(yolo_pt).to(device).half()
+    sign_pt = "models/yolov8_signs.pt"
+    sign = YOLO(sign_pt).to(device).half() if os.path.exists(sign_pt) else None
     ocr = easyocr.Reader(["en","it"], gpu=device.startswith("cuda"))
     return (obj, sign), ocr
 
@@ -104,23 +88,23 @@ def detect_landmarks_for_frame(img, model, ocr, conf=0.25):
     if not r.boxes:
         return "none", ""
     labels, texts = [], []
-    for box in r.boxes:
-        cls = model.model.names[int(box.cls[0])]
+    for b in r.boxes:
+        cls = model.model.names[int(b.cls[0])]
         if cls not in STATIC_YOLO:
             continue
-        x1,y1,x2,y2 = map(int, box.xyxy[0])
+        x1,y1,x2,y2 = map(int, b.xyxy[0])
         crop = img[y1:y2, x1:x2]
-        txt = " ".join(ocr.readtext(crop, detail=0))
-        if salient(txt):
-            labels.append(f"{cls}[{txt}]")
-            texts.append(txt)
+        t = " ".join(ocr.readtext(crop, detail=0))
+        if t:
+            texts.append(t)
+            labels.append(f"{cls}[{t}]")
         else:
             labels.append(cls)
     return ", ".join(labels), " ".join(texts)
 
-# ─── PLACES365 scene classifier ────────────────────────────────────────
+# ─── PLACES365 SCENE CLASSIFIER ─────────────────────────────────────────
 def get_scene_model(device):
-    import torchvision.models as models
+    from torchvision import models
     ck = fetch(
         "places365", "models",
         "http://places2.csail.mit.edu/models_places365/"
@@ -131,7 +115,6 @@ def get_scene_model(device):
     sd = torch.load(ck, map_location="cpu")["state_dict"]
     m.load_state_dict({k.replace("module.",""):v for k,v in sd.items()})
     m.to(device).half().eval()
-    # categories:
     cats = "categories_places365.txt"
     if not os.path.exists(cats):
         os.system(
@@ -147,10 +130,7 @@ def classify_scene_for_frame(img, model, classes):
         transforms.Resize((256,256)),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
-        transforms.Normalize(
-            [0.485,0.456,0.406],
-            [0.229,0.224,0.225]
-        )
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
     ])
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     inp = tf(pil).unsqueeze(0).to(
@@ -161,91 +141,24 @@ def classify_scene_for_frame(img, model, classes):
         p = torch.nn.functional.softmax(model(inp), 1)
     return classes[int(p.argmax())]
 
-# ─── BLIP captioning ──────────────────────────────────────────────────
+# ─── BLIP CAPTIONING ────────────────────────────────────────────────────
 def get_caption_models(device):
     repo = "Salesforce/blip-image-captioning-base"
     proc = BlipProcessor.from_pretrained(repo)
-    mod = BlipForConditionalGeneration.from_pretrained(repo).to(device)
+    mod  = BlipForConditionalGeneration.from_pretrained(repo).to(device)
     return proc, mod
 
-def generate_caption_for_frame(img, proc, mod, landmarks):
+def generate_caption_for_frame(img, proc, mod, lm):
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     if max(pil.size) > 512:
         pil.thumbnail((512,512), Image.LANCZOS)
-    ins = proc(images=pil,
-               text=f"Scene contains: {landmarks}.",
-               return_tensors="pt").to(mod.device)
+    ins = proc(images=pil, text=f"Scene contains: {lm}.", return_tensors="pt")
+    ins = ins.to(mod.device)
     with torch.no_grad():
         ids = mod.generate(**ins, max_new_tokens=30)
     return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
-# ─── Flan‑T5 long summary ─────────────────────────────────────────────
-# src/utils.py  — replace your existing generate_long_summary with this:
-
-# src/utils.py
-# src/utils.py
-
-def generate_long_summary(events, *args, **kwargs):
-    """
-    Build a single, concise first‑person journey sentence from your frame events.
-    """
-    # 1) Filter out drive/stop
-    sigs = [e for e in events if e not in ("drive", "stop")]
-
-    # 2) Collapse duplicates
-    clean = []
-    for e in sigs:
-        if not clean or clean[-1] != e:
-            clean.append(e)
-
-    # 3) Handle the green light start
-    if "the signal turned green" in clean:
-        gidx = clean.index("the signal turned green")
-        summary = "I drove straight after the light turned green"
-        rem = clean[gidx+1:]
-    else:
-        summary = "I drove straight"
-        rem = clean
-
-    # 4) Walk remaining events
-    i = 0
-    while i < len(rem):
-        e = rem[i]
-        # a) group all consecutive passed frames
-        if e.startswith("passed "):
-            shops = []
-            while i < len(rem) and rem[i].startswith("passed "):
-                shops.append(rem[i][len("passed "):])
-                i += 1
-            if len(shops) == 1:
-                summary += f" and passed {shops[0]}"
-            else:
-                # Oxford comma style
-                summary += " and passed " + ", ".join(shops[:-1]) + f" and {shops[-1]}"
-        # b) single right turn
-        elif e == "turn_right":
-            summary += " and took a slight right"
-            # skip any repeated rights
-            while i < len(rem) and rem[i] == "turn_right":
-                i += 1
-        # c) single left turn
-        elif e == "turn_left":
-            summary += " and turned left"
-            # skip any repeated lefts
-            while i < len(rem) and rem[i] == "turn_left":
-                i += 1
-        else:
-            # unknown event, skip
-            i += 1
-
-    # 5) finish
-    summary += " and continued straight."
-
-    # Capitalize
-    return summary[0].upper() + summary[1:]
-
-
-# ─── Table helper ─────────────────────────────────────────────────────
+# ─── PURE‑PYTHON JOURNEY SUMMARY ────────────────────────────────────────
 def summarise_journey(events, lm, cap, scn, ocr):
     return [
         {
@@ -256,3 +169,52 @@ def summarise_journey(events, lm, cap, scn, ocr):
         }
         for i in range(len(events))
     ]
+
+def generate_long_summary(events, *args, **kwargs):
+    """
+    Build one deterministic first‑person sentence from your event list.
+    """
+    # 1) drop noise
+    sigs = [e for e in events if e not in ("drive","stop")]
+
+    # 2) collapse duplicates
+    clean = []
+    for e in sigs:
+        if not clean or clean[-1] != e:
+            clean.append(e)
+
+    # 3) start
+    if "the signal turned green" in clean:
+        idx = clean.index("the signal turned green")
+        summary = "I drove straight after the light turned green"
+        rem = clean[idx+1:]
+    else:
+        summary = "I drove straight"
+        rem = clean
+
+    # 4) walk
+    i = 0
+    while i < len(rem):
+        e = rem[i]
+        if e.startswith("passed "):
+            shops = []
+            while i < len(rem) and rem[i].startswith("passed "):
+                shops.append(rem[i][len("passed "):])
+                i += 1
+            if len(shops)==1:
+                summary += f" and passed {shops[0]}"
+            else:
+                summary += " and passed " + ", ".join(shops[:-1]) + f" and {shops[-1]}"
+        elif e == "turn_right":
+            summary += " and took a slight right"
+            while i < len(rem) and rem[i]=="turn_right":
+                i += 1
+        elif e == "turn_left":
+            summary += " and turned left"
+            while i < len(rem) and rem[i]=="turn_left":
+                i += 1
+        else:
+            i += 1
+
+    summary += " and continued straight."
+    return summary[0].upper() + summary[1:]
