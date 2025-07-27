@@ -1,41 +1,54 @@
-# src/utils.py
-
-import os, cv2, urllib.request, json, torch, easyocr, numpy as np
+import os
+import cv2
+import urllib.request
+import json
+import torch
+import easyocr
+import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from transformers import pipeline
 from transformers import (
     BlipProcessor, BlipForConditionalGeneration,
     BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
 )
 
-# ───────────── static config / helpers ───────────────────────────────────
-STATIC_YOLO_CLASSES = {
-    "traffic light", "stop sign", "street sign", "traffic sign", "bus stop",
-    "bench", "fire hydrant", "parking meter", "clock", "potted plant"
+# ─── static configs ─────────────────────────────────────────────────────
+STATIC_YOLO = {
+    "traffic light", "stop sign", "street sign", "traffic sign",
+    "bench", "fire hydrant", "parking meter", "clock", "potted plant",
 }
-DYNAMIC_WORDS = {"car","person","truck","bus","motorcycle","bicycle","dog"}
+DYNAMIC = {"car","person","truck","bus","motorcycle","bicycle","dog"}
 
-def salient(t):
-    w = t.split()
-    return len(w) >= 2 or (w and w[0][0].isupper())
+# ─── helper to decide if OCR text is worth keeping ─────────────────────
+def salient(txt):
+    words = txt.split()
+    return len(words) >= 2 or (words and words[0][0].isupper())
 
-def kind_of(t):
-    l = t.lower()
-    if any(x in l for x in ["shop","store","mart","market","express"]):
+def kind_of(txt):
+    l = txt.lower()
+    if any(x in l for x in ["shop","store","express","mart","market"]):
         return "shop"
     if any(x in l for x in [
-        "registration","office","tower","hotel","plaza",
-        "building","center","carter"
+        "office","tower","building","center","plaza","hotel"
     ]):
         return "building"
     return "other"
 
-# ───────────── frame extraction & motion ────────────────────────────────
-def extract_frames(v, fps=1):
-    cap = cv2.VideoCapture(v)
+# ─── extract a frame‑per‑second or read a folder of JPGs ───────────────
+def extract_frames(path, fps=1):
+    # directory of images?
+    if os.path.isdir(path):
+        for fn in sorted(os.listdir(path)):
+            if fn.lower().endswith(".jpg"):
+                img = cv2.imread(os.path.join(path, fn))
+                if img is not None:
+                    yield img
+        return
+
+    # otherwise treat as video
+    cap = cv2.VideoCapture(path)
     nat = cap.get(cv2.CAP_PROP_FPS) or 30
-    step = max(1, round(nat/fps))
+    step = max(1, round(nat / fps))
     idx, ok, img = 0, *cap.read()
     print("[Frames] Starting extraction …")
     while ok:
@@ -46,15 +59,18 @@ def extract_frames(v, fps=1):
     cap.release()
     print("[Frames] Done.")
 
-def detect_event_for_frame(prev, cur, dx=1.5, stop=0.2):
+# ─── simple motion detection → drive/stop/turn ─────────────────────────
+def detect_event_for_frame(prev, cur, dx=1.5, stop_thr=0.2):
     if prev is None:
         return "drive"
     flow = cv2.calcOpticalFlowFarneback(
-        prev, cur, None, 5, 3, 15, 3, 5, 1.2, 0
+        prev, cur, None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2, flags=0
     )
     dxm = flow[...,0].mean()
     mag = np.linalg.norm(flow, axis=2).mean()
-    if mag < stop:
+    if mag < stop_thr:
         return "stop"
     if dxm > dx:
         return "turn_right"
@@ -62,172 +78,149 @@ def detect_event_for_frame(prev, cur, dx=1.5, stop=0.2):
         return "turn_left"
     return "drive"
 
-# ───────────── download helper ──────────────────────────────────────────
-def fetch(name, dir_, url, cfg):
-    os.makedirs(dir_, exist_ok=True)
-    path = os.path.join(dir_, cfg)
-    if url and not os.path.exists(path):
-        print(f"[Model] Downloading {name} …")
-        urllib.request.urlretrieve(url, path)
-    return path
+# ─── download helper ───────────────────────────────────────────────────
+def fetch(name, d, url, fname):
+    os.makedirs(d, exist_ok=True)
+    dst = os.path.join(d, fname)
+    if url and not os.path.exists(dst):
+        urllib.request.urlretrieve(url, dst)
+    return dst
 
-# ───────────── detectors & OCR ──────────────────────────────────────────
+# ─── YOLO + EasyOCR for landmarks ──────────────────────────────────────
 def get_landmark_models(device):
-    obj = YOLO(fetch(
+    yolo_path = fetch(
         "yolov8n", "models",
         "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
         "yolov8n.pt"
-    )).to(device).half()
+    )
+    obj = YOLO(yolo_path).to(device).half()
     sign_path = "models/yolov8_signs.pt"
     sign = YOLO(sign_path).to(device).half() if os.path.exists(sign_path) else None
     ocr = easyocr.Reader(["en","it"], gpu=device.startswith("cuda"))
     return (obj, sign), ocr
 
-def detect_landmarks_for_frame(f, model, ocr, conf=0.25):
-    r = model(f, verbose=False, conf=conf)[0]
+def detect_landmarks_for_frame(img, model, ocr, conf=0.25):
+    r = model(img, conf=conf, verbose=False)[0]
     if not r.boxes:
         return "none", ""
-    lbls, txts = [], []
-    for b in r.boxes:
-        cls = model.model.names[int(b.cls[0])]
-        if cls not in STATIC_YOLO_CLASSES:
+    labels, texts = [], []
+    for box in r.boxes:
+        cls = model.model.names[int(box.cls[0])]
+        if cls not in STATIC_YOLO:
             continue
-        x1,y1,x2,y2 = map(int, b.xyxy[0])
-        t = " ".join(s[1] for s in ocr.readtext(f[y1:y2, x1:x2]))
-        if t:
-            txts.append(t)
-            lbls.append(f"{cls} [{t}]")
+        x1,y1,x2,y2 = map(int, box.xyxy[0])
+        crop = img[y1:y2, x1:x2]
+        txt = " ".join(ocr.readtext(crop, detail=0))
+        if salient(txt):
+            labels.append(f"{cls}[{txt}]")
+            texts.append(txt)
         else:
-            lbls.append(cls)
-    return (", ".join(lbls) if lbls else "none"), " ".join(txts)
+            labels.append(cls)
+    return ", ".join(labels), " ".join(texts)
 
-# ───────────── scene classifier ─────────────────────────────────────────
+# ─── PLACES365 scene classifier ────────────────────────────────────────
 def get_scene_model(device):
-    from torchvision import models
+    import torchvision.models as models
     ck = fetch(
         "places365", "models",
-        "http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar",
+        "http://places2.csail.mit.edu/models_places365/"
+        "resnet18_places365.pth.tar",
         "resnet18_places365.pth.tar"
     )
     m = models.resnet18(num_classes=365)
     sd = torch.load(ck, map_location="cpu")["state_dict"]
     m.load_state_dict({k.replace("module.",""):v for k,v in sd.items()})
     m.to(device).half().eval()
-
-    cat = "categories_places365.txt"
-    if not os.access(cat, os.W_OK):
+    # categories:
+    cats = "categories_places365.txt"
+    if not os.path.exists(cats):
         os.system(
             "wget -q https://raw.githubusercontent.com/csailvision/"
             "places365/master/categories_places365.txt"
         )
-    cls = [l.strip().split(" ")[0][3:] for l in open(cat)]
-    return m, cls
+    classes = [l.strip().split()[0][3:] for l in open(cats)]
+    return m, classes
 
-def classify_scene_for_frame(f, m, cls):
+def classify_scene_for_frame(img, model, classes):
     from torchvision import transforms
     tf = transforms.Compose([
         transforms.Resize((256,256)),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
-        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+        transforms.Normalize(
+            [0.485,0.456,0.406],
+            [0.229,0.224,0.225]
+        )
     ])
-    img = Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
-    inp = tf(img).unsqueeze(0).to(
-        next(m.parameters()).device,
-        dtype=next(m.parameters()).dtype
+    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    inp = tf(pil).unsqueeze(0).to(
+        next(model.parameters()).device,
+        dtype=next(model.parameters()).dtype
     )
     with torch.no_grad():
-        p = torch.nn.functional.softmax(m(inp), 1)
-    return cls[int(p.argmax())]
+        p = torch.nn.functional.softmax(model(inp), 1)
+    return classes[int(p.argmax())]
 
-# ───────────── caption model ────────────────────────────────────────────
-def get_caption_models(d):
+# ─── BLIP captioning ──────────────────────────────────────────────────
+def get_caption_models(device):
     repo = "Salesforce/blip-image-captioning-base"
-    return (
-        BlipProcessor.from_pretrained(repo),
-        BlipForConditionalGeneration.from_pretrained(repo).to(d)
-    )
+    proc = BlipProcessor.from_pretrained(repo)
+    mod = BlipForConditionalGeneration.from_pretrained(repo).to(device)
+    return proc, mod
 
-def generate_caption_for_frame(f, proc, mod, lm=None):
-    img = Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
-    if max(img.size) > 512:
-        img.thumbnail(
-            (512,512),
-            Image.Resampling.LANCZOS if hasattr(Image,"Resampling")
-            else Image.LANCZOS
-        )
-    ins = proc(
-        images=img,
-        text=(f"Scene contains: {lm}." if lm else ""),
-        return_tensors="pt"
-    ).to(mod.device)
+def generate_caption_for_frame(img, proc, mod, landmarks):
+    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    if max(pil.size) > 512:
+        pil.thumbnail((512,512), Image.LANCZOS)
+    ins = proc(images=pil,
+               text=f"Scene contains: {landmarks}.",
+               return_tensors="pt").to(mod.device)
     with torch.no_grad():
         ids = mod.generate(**ins, max_new_tokens=30)
     return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
-# ───────────── summary generator ─────────────────────────────────────────
-# src/utils.py  —  near the bottom, overwrite generate_long_summary
-
+# ─── Flan‑T5 long summary ─────────────────────────────────────────────
+from transformers import pipeline as hf_pipeline
 
 def generate_long_summary(events, landmarks, captions, scenes, ocr, stats):
-    """
-    Turn your bullet‑list of events into one concise, first‑person summary
-    using Flan‑T5‑Large (publicly available).
-    """
-    # load once per call
-    summariser = pipeline(
+    summariser = hf_pipeline(
         "text2text-generation",
         model="google/flan-t5-large",
-        device_map="auto" if torch.cuda.is_available() else None,
+        device_map="auto" \
+            if torch.cuda.is_available() else None
     )
-
-    # build up the bullet list
     lines = []
-    for i, e in enumerate(events):
-        cap_clean = " ".join(
-            w for w in captions[i].split() if w.lower() not in DYNAMIC_WORDS
-        )
+    for i,e in enumerate(events):
+        cap = " ".join(w for w in captions[i].split() if w.lower() not in DYNAMIC)
         lines.append(
             f"Frame {i+1}: Event={e}, Scene={scenes[i]}, "
-            f"Caption={cap_clean}, Landmark={landmarks[i]}, OCR='{ocr[i]}'"
+            f"Caption={cap}, Landmark={landmarks[i]}, OCR='{ocr[i]}'"
         )
-
-    # whitelist logic unchanged
+    # build whitelist from sign statistics
     whitelist = []
     for bag in stats.values():
-        whitelist.extend(
-            t for t, _ in sorted(bag.items(), key=lambda kv: (-kv[1][0], -kv[1][1]))[:2]
-        )
-
-    if whitelist:
-        guard = (
-            "Use ONLY these place names: " + ", ".join(whitelist) + ".\n"
-        )
-    else:
-        guard = "Do NOT mention any place names.\n"
-
+        whitelist.extend(t for t,_ in sorted(
+            bag.items(), key=lambda kv:(-kv[1][0],-kv[1][1])
+        )[:2])
+    guard = (
+        "Use ONLY these place names: "
+        + ", ".join(whitelist)+".\n"
+    ) if whitelist else "Do NOT mention any place names.\n"
     prompt = (
-        "Summarise this drive in a friendly first‑person tone, "
-        "ignoring random people or cars.\n"
-        + guard
-        + "---\n"
-        + "\n".join(lines)
-        + "\n---\nJourney Summary:"
+        "Summarise this drive in a friendly first‑person tone, ignoring people/vehicles.\n"
+        + guard + "---\n" + "\n".join(lines) + "\n---\nJourney Summary:"
     )
-
-    # run the summariser
     out = summariser(prompt, max_new_tokens=160, do_sample=False)[0]["generated_text"]
-    return out.strip()
+    return out.split("Journey Summary:")[-1].strip()
 
-
-# ───────────── step table helper ─────────────────────────────────────────
-def summarise_journey(ev, lm, cap, scn, ocr):
+# ─── Table helper ─────────────────────────────────────────────────────
+def summarise_journey(events, lm, cap, scn, ocr):
     return [
         {
             "step": i+1,
-            "event": ev[i],
+            "event": events[i],
             "scene": scn[i],
             "description": f"{cap[i]}. Landmark: {lm[i]}. OCR: '{ocr[i]}'"
         }
-        for i in range(len(ev))
+        for i in range(len(events))
     ]
