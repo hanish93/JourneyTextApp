@@ -5,21 +5,23 @@ import cv2
 import torch
 import logging
 from glob import glob
-from transformers import pipeline
 
-from utils import frames, move, load_yolo, detect_signal_color
+from utils import (
+    extract_frames,
+    detect_event_for_frame,
+    get_landmark_models,
+    detect_landmarks_for_frame,
+    get_caption_models,
+    generate_caption_for_frame,
+    get_scene_model,
+    classify_scene_for_frame,
+    generate_long_summary,
+    summarise_journey,
+    salient,
+    kind_of
+)
 
-# ─── CONFIGURATION ───────────────────────────────────────────────
-# Frames where you stopped at red lights:
-SIGNAL_RED_FRAMES   = [5, 45, 112]      # ← replace these with your real frame numbers
-# Frames where the signal turned green again:
-SIGNAL_GREEN_FRAMES = [6, 47, 114]
-# Frames where you turned left:
-TURN_LEFT_FRAMES    = [96, 130]
-# Frames where you turned right:
-TURN_RIGHT_FRAMES   = [77, 158]
-
-# Your 5 manually‑labeled shop/cinema frames:
+# ─── MANUAL INJECTION CONFIG ─────────────────────────────────────────
 FRAME_WHITELIST = [7, 10, 77, 96, 116]
 FRAME_LABELS   = [
     "Tesco Express",
@@ -28,108 +30,105 @@ FRAME_LABELS   = [
     "Vue",
     "Wool Pack Hub",
 ]
-# ────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 
-def summarise_events(events, dev):
-    """
-    Turn a list of bullet events into a single first‑person sentence
-    via Flan‑T5‑large.
-    """
-    pipe = pipeline(
-        "text2text-generation",
-        model="google/flan-t5-large",
-        device_map="auto" if dev.startswith("cuda") else None,
-    )
-    bullets = "\n".join(f"- {e}" for e in events)
-    prompt = (
-        "Write a concise first‑person sentence describing the drive, given these events:\n"
-        + bullets
-        + "\n\nSummary:"
-    )
-    out = pipe(prompt, max_new_tokens=60, do_sample=False)[0]["generated_text"]
-    return out.strip()
+def load_models(device):
+    print("[Models] Loading…")
+    (obj, sign), ocr = get_landmark_models(device)
+    cap_proc, cap_mod = get_caption_models(device)
+    scene_mod, scene_classes = get_scene_model(device)
+    print("[Models] Done.")
+    return {
+        "obj": obj, "sign": sign, "ocr": ocr,
+        "cap_proc": cap_proc, "cap_mod": cap_mod,
+        "scene_mod": scene_mod, "scene_classes": scene_classes
+    }
 
-def run_clip(path: str, yolo_model, dev: str):
-    # build a per‑second frame iterator (or sorted JPG folder)
-    if os.path.isdir(path):
-        jpgs = sorted(glob(os.path.join(path, "*.jpg")))
-        if not jpgs:
-            raise FileNotFoundError(f"No JPG frames found in {path}")
-        it = (cv2.imread(fp) for fp in jpgs)
-    else:
-        it = frames(path, fps=1)
+def process_frames(video, M):
+    ev, lm, cap, scn, ocr_txt = [], [], [], [], []
+    sign_stats = {"shop": {}, "building": {}, "other": {}}
+    prev = None
 
-    prev_light = None
-    events = []
+    for idx, frm in enumerate(extract_frames(video), start=1):
+        gray = cv2.cvtColor(frm, cv2.COLOR_BGR2GRAY)
 
-    for idx, img in enumerate(it, start=1):
-        if img is None:
-            continue
+        # 1) motion event
+        ev.append(detect_event_for_frame(prev, gray))
+        prev = gray
 
-        # 1) force‑inject your five shop names:
+        # 1a) manual shop injection & skip YOLO/OCR for these frames
         if idx in FRAME_WHITELIST:
             label = FRAME_LABELS[FRAME_WHITELIST.index(idx)]
-            events.append(f"passed {label}")
+            ev.append(f"passed {label}")
+            # append placeholders so lm, cap, scn, ocr_txt stay aligned
+            lm.append("none")
+            cap.append("…")
+            scn.append("…")
+            ocr_txt.append("")
+            continue
 
-        # 2) detect lane‑changes via your hand‑picked lists:
-        if idx in TURN_LEFT_FRAMES:
-            events.append("took a slight left")
-        elif idx in TURN_RIGHT_FRAMES:
-            events.append("took a slight right")
+        # 2) landmark + OCR
+        with torch.no_grad():
+            lmk, txt = detect_landmarks_for_frame(frm, M["obj"], M["ocr"])
+            lm.append(lmk)
+            ocr_txt.append(txt)
 
-        # 3) run YOLO → traffic‑light flips only:
-        res = yolo_model(img, conf=0.25, verbose=False)[0]
-        for b in res.boxes:
-            cls = yolo_model.model.names[int(b.cls[0])]
-            if cls == "traffic light":
-                x1,y1,x2,y2 = map(int, b.xyxy[0])
-                roi = img[y1:y2, x1:x2]
-                col = detect_signal_color(roi)
-                # record red only on your red frames, green only on your green
-                if col == "red" and idx in SIGNAL_RED_FRAMES and prev_light != "red":
-                    events.append("stopped at the red light")
-                    prev_light = "red"
-                elif col == "green" and idx in SIGNAL_GREEN_FRAMES and prev_light != "green":
-                    events.append("the signal turned green")
-                    prev_light = "green"
+            # 3) BLIP caption + scene
+            cap.append(
+                generate_caption_for_frame(frm, M["cap_proc"], M["cap_mod"], lmk)
+            )
+            scn.append(
+                classify_scene_for_frame(frm, M["scene_mod"], M["scene_classes"])
+            )
 
-        # debug last few
-        print(f"[{idx:03d}] events[-3:] = {events[-3:]}")
+            # 4) sign statistics (unchanged)
+            if M["sign"]:
+                for b in M["sign"](frm, conf=0.15, verbose=False)[0].boxes:
+                    x1, y1, x2, y2 = map(int, b.xyxy[0])
+                    s_txt = " ".join(
+                        t[1] for t in M["ocr"].readtext(frm[y1:y2, x1:x2])
+                    )
+                    if not salient(s_txt):
+                        continue
+                    k = kind_of(s_txt)
+                    e = sign_stats[k].setdefault(s_txt, [0, 0.0])
+                    e[0] += 1
+                    e[1] += float(b.conf[0])
 
-    # collapse consecutive duplicates
-    clean = []
-    for e in events:
-        if not clean or clean[-1] != e:
-            clean.append(e)
+        print(f"[{idx:03d}] last_event={ev[-1]}")
 
-    # ensure we end by continuing straight
-    if clean and not clean[-1].startswith(("passed","stopped","the signal","took")):
-        clean.append("continued straight")
+    torch.cuda.empty_cache()
+    return ev, lm, cap, scn, ocr_txt, sign_stats
 
-    # final summarisation
-    summary = summarise_events(clean, dev)
-    print("\n=== JOURNEY SUMMARY ===\n" + summary)
-    return summary
+def run_pipeline(video):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"\n=== Journey summary for {video} (device={device}) ===\n")
+    M = load_models(device)
 
-def run(input_path: str, yolo_weights: str = None):
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
-    # load_yolo handles None → downloads/uses default yolov8n.pt
-    yolo_model = load_yolo(dev, yolo_weights)
-    return run_clip(input_path, yolo_model, dev)
+    ev, lm, cap, scn, ocr, stats = process_frames(video, M)
+
+    # step‑by‑step table
+    for row in summarise_journey(ev, lm, cap, scn, ocr):
+        print(
+            f"[{row['step']:03d}] {row['event']:<15} | "
+            f"Scene={row['scene']:<18} | {row['description']}"
+        )
+
+    print("\n―――――  Long‑form summary  ―――――\n")
+    print(generate_long_summary(ev, lm, cap, scn, ocr, stats))
+    print("\n―――――――――――――――――――――――――――――\n")
 
 if __name__ == "__main__":
     import argparse, warnings
     warnings.filterwarnings("ignore", category=UserWarning)
     logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
-    p = argparse.ArgumentParser(description="Journey summariser")
-    p.add_argument(
-        "-i", "--input", required=True,
-        help="Folder of JPG frames or a single MP4"
+    p = argparse.ArgumentParser(
+        description="Console journey summariser"
     )
     p.add_argument(
-        "-m", "--yolo-model", default=None,
-        help="Path to a custom YOLOv8 .pt (omit for default yolov8n)"
+        "--video", required=True,
+        help="Path to .mp4 file or folder of frames"
     )
     args = p.parse_args()
-    run(args.input, args.yolo_model)
+    run_pipeline(args.video)
