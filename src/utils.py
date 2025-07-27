@@ -8,13 +8,11 @@ from PIL import Image
 from ultralytics import YOLO
 from transformers import BlipProcessor, BlipForConditionalGeneration
 
-# ─── CONFIG ─────────────────────────────────────────────────────────────────
 STATIC_YOLO = {
     "traffic light", "stop sign", "street sign", "traffic sign",
     "bench", "fire hydrant", "parking meter", "clock", "potted plant",
 }
 
-# ─── FRAME EXTRACTION ───────────────────────────────────────────────────────
 def extract_frames(path, fps=1):
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
@@ -23,23 +21,23 @@ def extract_frames(path, fps=1):
                 if img is not None:
                     yield img
         return
-
     cap = cv2.VideoCapture(path)
     nat = cap.get(cv2.CAP_PROP_FPS) or 30
     step = max(1, round(nat / fps))
     idx, ok, img = 0, *cap.read()
     while ok:
-        if idx % step == 0:
+        if idx % step:
+            pass
+        else:
             yield img
         ok, img = cap.read()
         idx += 1
     cap.release()
 
-# ─── MOTION (LANE‑CHANGE) ──────────────────────────────────────────────────
 def detect_event_for_frame(prev, cur, dx_thresh=3.0, stop_thresh=0.2):
     if prev is None:
         return "drive"
-    flow = cv2.calcOpticalFlowFarneback(prev, cur, None, 0.5,3,15,3,5,1.2,0)
+    flow = cv2.calcOpticalFlowFarneback(prev,cur,None,0.5,3,15,3,5,1.2,0)
     dxm = flow[...,0].mean()
     mag = np.linalg.norm(flow,axis=2).mean()
     if mag < stop_thresh:
@@ -55,39 +53,36 @@ def debounce_lane_changes(events, window=3):
     n = len(events)
     for i,e in enumerate(events):
         if e in ("turn_left","turn_right"):
-            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
-                      if events[j]==e)
-            if cnt<2:
+            cnt = sum(
+                1 for j in range(max(0,i-window), min(n,i+window+1))
+                if events[j]==e
+            )
+            if cnt < 2:
                 out[i] = "drive"
     return out
 
-# ─── SIGNAL‑COLOR VIA HSV ─────────────────────────────────────────────────
 def detect_signal_color(frame, yolo_model, conf=0.25):
     r = yolo_model(frame, conf=conf, verbose=False)[0]
     boxes = []
     for b in r.boxes:
         cls = yolo_model.model.names[int(b.cls[0])]
-        if cls=="traffic light":
+        if cls == "traffic light":
             x1,y1,x2,y2 = map(int,b.xyxy[0].cpu().numpy())
             boxes.append((x1,y1,x2,y2))
     if not boxes:
         return None
-    # pick largest
     areas = [(x2-x1)*(y2-y1) for x1,y1,x2,y2 in boxes]
     x1,y1,x2,y2 = boxes[int(np.argmax(areas))]
     crop = frame[y1:y2, x1:x2]
-    if crop.size==0:
+    if crop.size == 0:
         return None
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    # red masks
-    m1 = cv2.inRange(hsv, (0,50,50), (10,255,255))
-    m2 = cv2.inRange(hsv, (160,50,50),(180,255,255))
+    m1 = cv2.inRange(hsv,(0,50,50),(10,255,255))
+    m2 = cv2.inRange(hsv,(160,50,50),(180,255,255))
     red = cv2.bitwise_or(m1,m2)
-    # green mask
-    green = cv2.inRange(hsv, (40,50,50),(85,255,255))
-    rc = int(red.sum()/255)
-    gc = int(green.sum()/255)
-    if max(rc,gc)<50:
+    green = cv2.inRange(hsv,(40,50,50),(85,255,255))
+    rc = int(red.sum()/255); gc = int(green.sum()/255)
+    if max(rc,gc) < 50:
         return None
     return "red" if rc>gc else "green"
 
@@ -96,13 +91,14 @@ def debounce_signals(states, window=2):
     n = len(states)
     for i,s in enumerate(states):
         if s in ("red","green"):
-            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
-                      if states[j]==s)
-            if cnt<2:
-                out[i]=None
+            cnt = sum(
+                1 for j in range(max(0,i-window), min(n,i+window+1))
+                if states[j]==s
+            )
+            if cnt < 2:
+                out[i] = None
     return out
 
-# ─── LANDMARKS + OCR ───────────────────────────────────────────────────────
 def fetch(name,d,url,fname):
     os.makedirs(d,exist_ok=True)
     dst = os.path.join(d,fname)
@@ -129,10 +125,10 @@ def detect_landmarks_for_frame(img,yolo,ocr,conf=0.25):
         crop = img[y1:y2,x1:x2]
         t = " ".join(ocr.readtext(crop,detail=0))
         labels.append(f"{cls}[{t}]" if t else cls)
-        if t: texts.append(t)
-    return ", ".join(labels) or "none", " ".join(texts)
+        if t:
+            texts.append(t)
+    return ", ".join(labels) or "none"," ".join(texts)
 
-# ─── SCENE CLASSIFIER ─────────────────────────────────────────────────────
 def get_scene_model(device):
     from torchvision import models
     ck = fetch("places365","models",
@@ -146,17 +142,15 @@ def get_scene_model(device):
     if not os.path.exists(cats):
         os.system("wget -q https://raw.githubusercontent.com/csailvision/"
                   "places365/master/categories_places365.txt")
-    classes=[l.strip().split()[0][3:] for l in open(cats)]
+    classes = [l.strip().split()[0][3:] for l in open(cats)]
     return m,classes
 
 def classify_scene_for_frame(img,model,classes):
     from torchvision import transforms
     tf = transforms.Compose([
-        transforms.Resize((256,256)),
-        transforms.CenterCrop(224),
+        transforms.Resize((256,256)),transforms.CenterCrop(224),
         transforms.ToTensor(),
-        transforms.Normalize([0.485,0.456,0.406],
-                             [0.229,0.224,0.225])
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
     ])
     pil = Image.fromarray(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
     inp = tf(pil).unsqueeze(0).to(
@@ -167,52 +161,46 @@ def classify_scene_for_frame(img,model,classes):
         p = torch.nn.functional.softmax(model(inp),1)
     return classes[int(p.argmax())]
 
-# ─── BLIP CAPTION ─────────────────────────────────────────────────────────
 def get_caption_models(device):
     repo="Salesforce/blip-image-captioning-base"
     proc=BlipProcessor.from_pretrained(repo)
-    mod =BlipForConditionalGeneration.from_pretrained(repo).to(device)
+    mod=BlipForConditionalGeneration.from_pretrained(repo).to(device)
     return proc,mod
 
 def generate_caption_for_frame(img,proc,mod,lm):
-    pil=Image.fromarray(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
+    pil = Image.fromarray(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
     if max(pil.size)>512:
         pil.thumbnail((512,512),Image.LANCZOS)
-    ins=proc(images=pil,text=f"Scene contains: {lm}.",return_tensors="pt")
-    ins=ins.to(mod.device)
+    ins = proc(images=pil,text=f"Scene contains: {lm}.",
+               return_tensors="pt").to(mod.device)
     with torch.no_grad():
-        ids=mod.generate(**ins,max_new_tokens=30)
+        ids = mod.generate(**ins,max_new_tokens=30)
     return proc.batch_decode(ids,skip_special_tokens=True)[0].strip()
 
-# ─── SUMMARY BUILDERS ────────────────────────────────────────────────────
 def summarise_journey(events,lm,cap,scn,ocr,signals):
     rows=[]
     for i,e in enumerate(events):
         rows.append({
-            "step": i+1,
-            "event": e,
-            "signal": signals[i] or "",
-            "scene": scn[i],
-            "description": f"{cap[i]}. Landmark: {lm[i]}. OCR: '{ocr[i]}'"
+            "step":i+1,
+            "event":e,
+            "signal":signals[i] or "",
+            "scene":scn[i],
+            "description":f"{cap[i]}. Landmark: {lm[i]}. OCR: '{ocr[i]}'"
         })
     return rows
 
-def generate_long_summary(events, *a, **k):
-    # drop drive/stop
+def generate_long_summary(events,*a,**k):
     sigs=[e for e in events if e not in ("drive","stop")]
-    # collapse
     clean=[]
     for e in sigs:
         if not clean or clean[-1]!=e:
             clean.append(e)
-    # begin
     if clean and "green" in clean[0]:
         summ="I drove straight after the light turned green"
         rem=clean[1:]
     else:
         summ="I drove straight"
         rem=clean
-    # walk
     i=0
     while i<len(rem):
         e=rem[i]
