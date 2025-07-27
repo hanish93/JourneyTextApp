@@ -1,4 +1,4 @@
-# src/app.py  —  glue everything together
+# src/app.py  —  glue + progress + clear summary
 
 import os
 import cv2
@@ -8,24 +8,26 @@ from glob import glob
 
 from utils import frames, move, load_det, landmarks, load_cap, cap_img, diary, DYNAMIC
 
+
 def run_clip(path, models, dev):
-    # ─── Directory? ────────────────────────────────────────
+    # ─── Find frames ────────────────────────────────────────────
     if os.path.isdir(path):
-        # 1) look for JPG/PNG frames:
+        # 1) try images
         img_paths = sorted(glob(os.path.join(path, "*.jpg"))) \
                   + sorted(glob(os.path.join(path, "*.jpeg"))) \
                   + sorted(glob(os.path.join(path, "*.png")))
         if img_paths:
             frame_iter = (cv2.imread(p) for p in img_paths)
         else:
-            # 2) look for MP4 videos:
+            # 2) try videos
             vid_paths = sorted(glob(os.path.join(path, "*.mp4")))
             if vid_paths:
+                # recurse into each video
                 return "\n\n".join(run_clip(v, models, dev) for v in vid_paths)
             else:
-                raise FileNotFoundError(f"No images or videos found in '{path}'")
+                raise FileNotFoundError(f"No .jpg/.png or .mp4 under '{path}'")
     else:
-        # Single video file:
+        # single video
         frame_iter = frames(path, fps=1)
 
     yolo, ocr = models["det"]
@@ -34,7 +36,8 @@ def run_clip(path, models, dev):
     sentences = []
     whitelist = set()
 
-    for f in frame_iter:
+    # ─── Process each frame ────────────────────────────────────
+    for idx, f in enumerate(frame_iter, start=1):
         if f is None:
             continue
         gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
@@ -48,7 +51,13 @@ def run_clip(path, models, dev):
         caption = " ".join(w for w in caption.split() if w.lower() not in DYNAMIC)
         sentences.append(f"I {verb} and {caption.lower()}")
 
-    return diary(sentences, whitelist)
+        # ← progress print
+        print(f"[frame {idx:03d}] saw signs: {', '.join(names) or '—'}")
+
+    # ─── Final summary ──────────────────────────────────────────
+    summary = diary(sentences, whitelist)
+    print("\n=== JOURNEY SUMMARY ===\n" + summary)
+    return summary
 
 
 def run(target, custom_yolo=None):
@@ -57,7 +66,7 @@ def run(target, custom_yolo=None):
     cap = load_cap(dev)
     models = {"det": (yolo, ocr), "cap": cap}
 
-    print(run_clip(target, models, dev))
+    return run_clip(target, models, dev)
 
 
 if __name__ == "__main__":
@@ -68,7 +77,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Console journey summariser")
     parser.add_argument(
         "--input", "-i", required=True,
-        help="Path to a .mp4 file, folder of .mp4s, or folder of JPG/PNG frames"
+        help="Path to .mp4, folder of .mp4s, or folder of JPG/PNG frames"
     )
     parser.add_argument(
         "--yolo-model", "-m", default=None,
