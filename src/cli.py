@@ -7,12 +7,12 @@ import argparse
 import warnings
 import logging
 
-# ─── ensure 'src/' is on sys.path ───────────────────────────────────
+# make sure the `src/` folder is on the import path
 HERE = os.path.dirname(__file__)
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-from app import run   # now imports src/app.py
+from app import run   # picks up src/app.py
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=UserWarning)
