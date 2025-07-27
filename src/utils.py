@@ -1,20 +1,24 @@
+# src/utils.py
+
 import os
 import cv2
-import urllib.request
-import numpy as np
-from ultralytics import YOLO
-
-def fetch(dst_dir: str, url: str, fname: str) -> str:
-    os.makedirs(dst_dir, exist_ok=True)
-    path = os.path.join(dst_dir, fname)
-    if url and not os.path.exists(path):
-        urllib.request.urlretrieve(url, path)
-    return path
 
 def frames(video_path: str, fps: int = 1):
+    """
+    Yield frames from a video at approximately `fps` frames per second.
+    Or, if `video_path` is a directory of JPGs, yield those in sorted order.
+    """
+    if os.path.isdir(video_path):
+        # directory of JPGs
+        for fname in sorted(os.listdir(video_path)):
+            if fname.lower().endswith(".jpg"):
+                yield cv2.imread(os.path.join(video_path, fname))
+        return
+
+    # otherwise assume it's a video file
     cap = cv2.VideoCapture(video_path)
     original_fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    step = max(1, round(original_fps / fps))
+    step = max(1, int(round(original_fps / fps)))
     idx = 0
     ok, frame = cap.read()
     while ok:
@@ -23,49 +27,3 @@ def frames(video_path: str, fps: int = 1):
         ok, frame = cap.read()
         idx += 1
     cap.release()
-
-def move(prev_gray, curr_gray, dx: float = 1.5, stop_thr: float = 0.2) -> str:
-    if prev_gray is None:
-        return "drive"
-    flow = cv2.calcOpticalFlowFarneback(
-        prev_gray, curr_gray, None,
-        pyr_scale=0.5, levels=3, winsize=15,
-        iterations=3, poly_n=5, poly_sigma=1.2, flags=0
-    )
-    dxm = flow[...,0].mean()
-    mag = np.linalg.norm(flow, axis=2).mean()
-    if mag < stop_thr:
-        return "stop"
-    if dxm > dx:
-        return "turn_right"
-    if dxm < -dx:
-        return "turn_left"
-    return "drive"
-
-def load_yolo(dev: str, model_path: str = None):
-    if model_path:
-        model = YOLO(model_path).to(dev).half()
-    else:
-        pt = fetch(
-            "models",
-            "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
-            "yolov8n.pt"
-        )
-        model = YOLO(pt).to(dev).half()
-    return model
-
-def detect_signal_color(roi) -> str:
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    # red masks
-    r1, r2 = np.array([0,70,50]), np.array([10,255,255])
-    r3, r4 = np.array([170,70,50]), np.array([180,255,255])
-    red = int(cv2.countNonZero(cv2.inRange(hsv, r1, r2))
-            + cv2.countNonZero(cv2.inRange(hsv, r3, r4)))
-    # green mask
-    g1, g2 = np.array([40,40,40]), np.array([90,255,255])
-    green = int(cv2.countNonZero(cv2.inRange(hsv, g1, g2)))
-    if green > red and green > 50:
-        return "green"
-    if red > green and red > 50:
-        return "red"
-    return None
