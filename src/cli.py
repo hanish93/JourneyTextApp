@@ -1,12 +1,17 @@
+#!/usr/bin/env python3
 import argparse
+
+# relative import from the same package
 from .app import run_pipeline
 
 def main():
     p = argparse.ArgumentParser(description="Journey summariser")
-    p.add_argument("-i","--input", required=True,
-                   help="Video (.mp4) or folder of frames (.jpg)")
+    p.add_argument(
+        "-i", "--input", required=True,
+        help="Path to a .mp4 video or a folder of .jpg frames"
+    )
     args = p.parse_args()
     run_pipeline(args.input)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
