@@ -3,6 +3,7 @@
 import os, cv2, urllib.request, json, torch, easyocr, numpy as np
 from PIL import Image
 from ultralytics import YOLO
+from transformers import pipeline
 from transformers import (
     BlipProcessor, BlipForConditionalGeneration,
     BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
@@ -165,66 +166,59 @@ def generate_caption_for_frame(f, proc, mod, lm=None):
     return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
 # ───────────── summary generator ─────────────────────────────────────────
-def generate_long_summary(events, landmarks, captions, scenes, ocr, stats):
-    repo = "mistralai/Mistral-7B-Instruct-v0.2"
-    model = AutoModelForCausalLM.from_pretrained(
-        repo,
-        device_map="auto",
-        quantization_config=BitsAndBytesConfig(load_in_8bit=True),
-        torch_dtype=torch.float16
-    )
-    tok = AutoTokenizer.from_pretrained(repo)
+# src/utils.py  —  near the bottom, overwrite generate_long_summary
 
+
+def generate_long_summary(events, landmarks, captions, scenes, ocr, stats):
+    """
+    Turn your bullet‑list of events into one concise, first‑person summary
+    using Flan‑T5‑Large (publicly available).
+    """
+    # load once per call
+    summariser = pipeline(
+        "text2text-generation",
+        model="google/flan-t5-large",
+        device_map="auto" if torch.cuda.is_available() else None,
+    )
+
+    # build up the bullet list
     lines = []
-    for i in range(len(events)):
+    for i, e in enumerate(events):
         cap_clean = " ".join(
-            w for w in captions[i].split()
-            if w.lower() not in DYNAMIC_WORDS
+            w for w in captions[i].split() if w.lower() not in DYNAMIC_WORDS
         )
         lines.append(
-            f"Frame {i+1}: Scene={scenes[i]}, Event={events[i]}, "
+            f"Frame {i+1}: Event={e}, Scene={scenes[i]}, "
             f"Caption={cap_clean}, Landmark={landmarks[i]}, OCR='{ocr[i]}'"
         )
 
+    # whitelist logic unchanged
     whitelist = []
     for bag in stats.values():
         whitelist.extend(
-            t for t,_ in sorted(
-                bag.items(),
-                key=lambda kv: (-kv[1][0], -kv[1][1])
-            )[:2]
+            t for t, _ in sorted(bag.items(), key=lambda kv: (-kv[1][0], -kv[1][1]))[:2]
         )
 
     if whitelist:
         guard = (
-            "Use **only** these place names (and no others): "
-            + ", ".join(whitelist) + ".\n"
+            "Use ONLY these place names: " + ", ".join(whitelist) + ".\n"
         )
     else:
-        guard = (
-            "Do **not** mention any place names, cities, countries or regions.\n"
-        )
+        guard = "Do NOT mention any place names.\n"
 
     prompt = (
-        "Summarize the journey factually in a diary tone. "
-        "Ignore transient objects like people and vehicles.\n"
+        "Summarise this drive in a friendly first‑person tone, "
+        "ignoring random people or cars.\n"
         + guard
         + "---\n"
         + "\n".join(lines)
-        + "\n---\nJourney Summary:\n"
+        + "\n---\nJourney Summary:"
     )
 
-    inp = tok(prompt, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        out = model.generate(
-            **inp,
-            max_new_tokens=160,
-            do_sample=False,
-            top_p=1.0
-        )
-    return tok.decode(out[0], skip_special_tokens=True) \
-             .split("Journey Summary:")[-1] \
-             .strip()
+    # run the summariser
+    out = summariser(prompt, max_new_tokens=160, do_sample=False)[0]["generated_text"]
+    return out.strip()
+
 
 # ───────────── step table helper ─────────────────────────────────────────
 def summarise_journey(ev, lm, cap, scn, ocr):
