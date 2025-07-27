@@ -29,7 +29,6 @@ def process_frames(src, yolo):
     raw_ev, raw_sig = [], []
     prev_gray = None
 
-    # load frames
     if os.path.isdir(src):
         paths = sorted(glob(os.path.join(src, "*.jpg")))
         it = (cv2.imread(p) for p in paths)
@@ -39,7 +38,6 @@ def process_frames(src, yolo):
     for idx, img in enumerate(it, start=1):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # manual insertion
         if idx in FRAME_WHITELIST:
             lbl = FRAME_LABELS[FRAME_WHITELIST.index(idx)]
             raw_ev .append(f"passed {lbl}")
@@ -47,12 +45,10 @@ def process_frames(src, yolo):
             prev_gray = gray
             continue
 
-        # motion
         ev = detect_event_for_frame(prev_gray, gray)
         raw_ev.append(ev)
         prev_gray = gray
 
-        # signal
         sg = detect_signal_color(img, yolo)
         raw_sig.append(sg)
 
@@ -68,15 +64,13 @@ def run_pipeline(src):
     yolo = get_yolo_model(dev)
     events, signals = process_frames(src, yolo)
 
-    # print table
     print("STEP │ EVENT               │ SIGNAL")
     print("─────┼─────────────────────┼────────")
-    for i,(ev,sg) in enumerate(zip(events,signals), start=1):
+    for i,(ev,sg) in enumerate(zip(events, signals), start=1):
         mark = "⚑" if ev.startswith("passed ") else " "
         s    = sg or "none"
         print(f"{i:3d}  │ {mark}{ev:<19} │ {s}")
 
-    # final summary
     print("\n―――――  Final summary  ―――――――\n")
     print(generate_long_summary(events, signals))
     print("\n――――――――――――――――――――\n")
@@ -86,7 +80,9 @@ if __name__=="__main__":
     warnings.filterwarnings("ignore", category=UserWarning)
 
     p = argparse.ArgumentParser(description="Journey summariser")
-    p.add_argument("-i","--input", required=True,
-                   help="Path to .mp4 or folder of frames")
+    p.add_argument(
+        "-i","--input", required=True,
+        help="Path to .mp4 or folder of .jpg frames"
+    )
     args = p.parse_args()
     run_pipeline(args.input)
