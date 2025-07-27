@@ -1,14 +1,10 @@
-import os
-import cv2
-import torch
-import logging
+import os, cv2, torch, logging
 from glob import glob
 
 from utils import (
     extract_frames,
     detect_event_for_frame,
     debounce_lane_changes,
-    get_signal_model,
     detect_signal_color,
     debounce_signals,
     get_landmark_models,
@@ -18,46 +14,33 @@ from utils import (
     get_scene_model,
     classify_scene_for_frame,
     summarise_journey,
-    generate_long_summary
+    generate_long_summary,
 )
 
-# ─── MANUAL FRAMES ───────────────────────────────────────────────────────
-FRAME_WHITELIST = [7, 10, 77, 96, 116]
+# ─── YOUR 5 MANUAL FRAMES ────────────────────────────────────────────────
+FRAME_WHITELIST = [7,10,77,96,116]
 FRAME_LABELS   = [
-    "Tesco Express",
-    "CREMA",
-    "Townhall",
-    "Vue",
-    "Wool Pack Hub",
+    "Tesco Express","CREMA","Townhall","Vue","Wool Pack Hub"
 ]
-# ─────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
 
 def load_models(device):
     print("[Models] Loading…")
-    # YOLO‑landmarks + OCR
-    yolo_obj, ocr = get_landmark_models(device)
-    # YOLO‑signals
-    sig_mod = get_signal_model(device)
-    # BLIP caption
+    yolo, ocr = get_landmark_models(device)
     cap_proc, cap_mod = get_caption_models(device)
-    # Places365 scene
     scene_mod, scene_cls = get_scene_model(device)
     print("[Models] Done.")
     return {
-        "yolo": yolo_obj,
-        "ocr": ocr,
-        "signal": sig_mod,
-        "cap_proc": cap_proc,
-        "cap_mod": cap_mod,
-        "scene_mod": scene_mod,
-        "scene_cls": scene_cls
+        "yolo": yolo, "ocr": ocr,
+        "cap_proc": cap_proc, "cap_mod": cap_mod,
+        "scene_mod": scene_mod, "scene_cls": scene_cls
     }
 
 def process_frames(src, M):
-    raw_events, lm, cap, scn, ocr_txt = [], [], [], [], []
+    raw_motions, sigs = [], []
+    lm, cap, scn, ocr = [], [], [], []
     prev_gray = None
 
-    # iterator
     if os.path.isdir(src):
         files = sorted(glob(os.path.join(src,"*.jpg")))
         it = (cv2.imread(f) for f in files)
@@ -67,89 +50,65 @@ def process_frames(src, M):
     for idx, frame in enumerate(it, start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # manual
+        # — manual frames —
         if idx in FRAME_WHITELIST:
             lbl = FRAME_LABELS[FRAME_WHITELIST.index(idx)]
-            raw_events.append(f"passed {lbl}")
-            lm.append("none")
-            cap.append("…")
-            scn.append("…")
-            ocr_txt.append("")
+            raw_motions.append(f"passed {lbl}")
+            sigs.append(None)
+            lm.append("none"); cap.append("…"); scn.append("…"); ocr.append("")
             prev_gray = gray
             continue
 
-        # motion
-        ev = detect_event_for_frame(prev_gray, gray)
+        # — motion —
+        evt = detect_event_for_frame(prev_gray, gray)
+        raw_motions.append(evt)
         prev_gray = gray
-        raw_events.append(ev)
 
-        # traffic‑light
-        color = detect_signal_color(frame, M["signal"])
-        raw_events.append("green" if color=="green" else "red" if color=="red" else None)
+        # — signal color via HSV —
+        color = detect_signal_color(frame, M["yolo"])
+        sigs.append(color)
 
-        # landmarks + OCR
-        lbls, txt = detect_landmarks_for_frame(frame, M["yolo"], M["ocr"])
-        lm.append(lbls); ocr_txt.append(txt)
+        # — landmarks + OCR —
+        labels, txt = detect_landmarks_for_frame(frame, M["yolo"], M["ocr"])
+        lm.append(labels); ocr.append(txt)
 
-        # BLIP + scene
-        cap.append(generate_caption_for_frame(frame, M["cap_proc"], M["cap_mod"], lbls))
+        # — BLIP caption & scene —
+        cap.append(generate_caption_for_frame(frame, M["cap_proc"], M["cap_mod"], labels))
         scn.append(classify_scene_for_frame(frame, M["scene_mod"], M["scene_cls"]))
 
-    # split None out of raw_events, keep alignment:
-    sig_series = [e for e in raw_events if e in ("red","green")]
-    motions = [e for e in raw_events if e not in ("red","green")]
+    # — debounce both streams —
+    motions = debounce_lane_changes(raw_motions)
+    signals = debounce_signals(sigs)
 
-    # debounce
-    motions = debounce_lane_changes(motions)
-    sigs    = debounce_signals(sig_series)
-
-    # now rebuild aligned events list: insert signal events into motions
-    events = []
-    mi = si = 0
-    for m in motions:
-        if m in ("turn_left","turn_right","passed Tesco Express","passed CREMA",
-                 "passed Townhall","passed Vue","passed Wool Pack Hub"):
-            events.append(m)
-        else:
-            # check next signal
-            if si < len(sigs) and sigs[si] is not None:
-                events.append("the signal turned green" if sigs[si]=="green" else "stopped at red light")
-            events.append(m)
-            si += 1
-        # (this keeps your five forced frames intact)
-    # trim to frame count if overshoot
-    events = events[: len(lm)]
-
-    return events, lm, cap, scn, ocr_txt
+    return motions, signals, lm, cap, scn, ocr
 
 def run_pipeline(src):
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\n=== Journey summary for {src} (device={dev}) ===\n")
     M = load_models(dev)
 
-    ev, lm, cap, scn, ocr = process_frames(src, M)
+    motions, signals, lm, cap, scn, ocr = process_frames(src, M)
 
-    # table
-    for row in summarise_journey(ev, lm, cap, scn, ocr):
+    # per‑frame table
+    for row in summarise_journey(motions, lm, cap, scn, ocr, signals):
         print(
             f"[{row['step']:03d}] {row['event']:<20} | "
+            f"Signal={row['signal'] or 'none':<5} | "
             f"Scene={row['scene']:<18} | {row['description']}"
         )
 
-    # final
+    # final single sentence
     print("\n―――――  Final summary  ―――――\n")
-    print(generate_long_summary(ev))
+    print(generate_long_summary(motions))
     print("\n――――――――――――――――――――\n")
 
 if __name__ == "__main__":
     import argparse, warnings
-    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore",category=UserWarning)
     logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
-    parser = argparse.ArgumentParser(description="Journey summariser")
-    parser.add_argument(
-        "-i","--input", required=True,
-        help="Path to .mp4 video or folder of .jpg frames"
-    )
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("-i","--input",required=True,
+                   help="Path to .mp4 or folder of .jpg frames")
+    args = p.parse_args()
     run_pipeline(args.input)
