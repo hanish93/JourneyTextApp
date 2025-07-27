@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# src/cli.py
+
 import os, sys
 
-# ensure src/ itself is on the PYTHONPATH
+# Ensure we can import from src/
 HERE = os.path.dirname(__file__)
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -15,8 +17,9 @@ if __name__ == "__main__":
 
     p = argparse.ArgumentParser()
     p.add_argument("--input", "-i", required=True,
-                   help="folder of JPGs or single .mp4")
+                   help="folder of .jpg frames or a single .mp4")
     p.add_argument("--yolo-model", "-m", default=None,
-                   help="path to custom YOLO weights")
+                   help="optional custom YOLOv8 .pt weights")
     args = p.parse_args()
+
     run(args.input, args.yolo_model)
