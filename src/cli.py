@@ -11,10 +11,10 @@ if __name__=="__main__":
     warnings.filterwarnings("ignore", category=UserWarning)
     logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
-    parser = argparse.ArgumentParser(description="Journey summariser CLI")
+    parser = argparse.ArgumentParser()
     parser.add_argument("-i","--input", required=True,
-                        help="Folder of JPG frames or single MP4")
+                        help="Folder of JPG frames or MP4")
     parser.add_argument("-m","--yolo-model", default=None,
-                        help="Custom YOLO .pt (omit to use yolov8n)")
+                        help="Custom YOLOv8 .pt (omit for yolov8n)")
     args = parser.parse_args()
     run(args.input, args.yolo_model)
