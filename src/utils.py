@@ -182,33 +182,48 @@ def generate_caption_for_frame(img, proc, mod, landmarks):
 # ─── Flan‑T5 long summary ─────────────────────────────────────────────
 # src/utils.py
 
+# src/utils.py
+
 from transformers import pipeline as hf_pipeline
 import torch
 
 def generate_long_summary(events, *args, **kwargs):
     """
-    Take the cleaned event list (one bullet per frame)
-    and produce exactly one first‑person sentence summary.
+    Take your raw events list (one per frame, including motion/turns/lights/passed…),
+    filter out the 'drive' noise, collapse duplicates, and produce exactly one
+    concise first-person sentence via Flan-T5-Large.
     """
-    # Load Flan‑T5‑Large on GPU if available
-    device_map = "auto" if torch.cuda.is_available() else None
-    summariser = hf_pipeline(
-        "text2text-generation",
-        model="google/flan-t5-large",
-        device_map=device_map,
-    )
+    # 1) Filter out drive events
+    sigs = [e for e in events if e != "drive"]
 
-    # Build a tiny bullet list of just the events
-    bullets = "\n".join(f"- {e}" for e in events)
+    # 2) Collapse consecutive duplicates
+    clean = []
+    for e in sigs:
+        if not clean or clean[-1] != e:
+            clean.append(e)
+
+    # If for some reason nothing left, fall back to at least one drive
+    if not clean:
+        clean = ["drove straight"]
+
+    # 3) Build bullet list
+    bullets = "\n".join(f"- {e}" for e in clean)
 
     prompt = (
-        "Write one concise first‑person sentence describing this drive, "
+        "Write one concise first-person sentence describing this drive, "
         "based only on these events:\n"
         f"{bullets}\n\nSummary:"
     )
 
+    # 4) Run the summariser
+    summariser = hf_pipeline(
+        "text2text-generation",
+        model="google/flan-t5-large",
+        device_map="auto" if torch.cuda.is_available() else None,
+    )
     out = summariser(prompt, max_new_tokens=60, do_sample=False)[0]["generated_text"]
     return out.strip()
+
 
 
 # ─── Table helper ─────────────────────────────────────────────────────
