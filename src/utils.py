@@ -180,49 +180,74 @@ def generate_caption_for_frame(img, proc, mod, landmarks):
     return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
 # ─── Flan‑T5 long summary ─────────────────────────────────────────────
-# src/utils.py
-
-# src/utils.py
-
-from transformers import pipeline as hf_pipeline
-import torch
+# src/utils.py  — replace your existing generate_long_summary with this:
 
 def generate_long_summary(events, *args, **kwargs):
     """
-    Take your raw events list (one per frame, including motion/turns/lights/passed…),
-    filter out the 'drive' noise, collapse duplicates, and produce exactly one
-    concise first-person sentence via Flan-T5-Large.
+    Build a single first‑person sentence from the cleaned event list.
+    Events should be one of:
+      - 'passed {Label}'
+      - 'turn_left'
+      - 'turn_right'
+      - 'stop'             (we treat as red light stop)
+      - 'the signal turned green'
     """
-    # 1) Filter out drive events
+    # 1) Remove all 'drive' entries
     sigs = [e for e in events if e != "drive"]
 
-    # 2) Collapse consecutive duplicates
+    # 2) Collapse adjacent duplicates
     clean = []
     for e in sigs:
         if not clean or clean[-1] != e:
             clean.append(e)
 
-    # If for some reason nothing left, fall back to at least one drive
-    if not clean:
-        clean = ["drove straight"]
+    # 3) Map each event to a phrase
+    phrase_map = []
+    for e in clean:
+        if e.startswith("passed "):
+            # e == "passed CREMA" -> "passed CREMA"
+            phrase_map.append(e)
+        elif e == "turn_left":
+            phrase_map.append("took a slight left")
+        elif e == "turn_right":
+            phrase_map.append("took a slight right")
+        elif e == "stop":
+            phrase_map.append("stopped at a red light")
+        elif e == "the signal turned green":
+            phrase_map.append("the light turned green")
+        else:
+            # catch-all: just use the raw event
+            phrase_map.append(e)
 
-    # 3) Build bullet list
-    bullets = "\n".join(f"- {e}" for e in clean)
+    # 4) Build the final sentence
+    if not phrase_map:
+        return "I drove straight."
 
-    prompt = (
-        "Write one concise first-person sentence describing this drive, "
-        "based only on these events:\n"
-        f"{bullets}\n\nSummary:"
-    )
+    # Start with "I"
+    # First event: if it's a light turning green, say "after the light turned green I"
+    parts = []
+    for idx, ph in enumerate(phrase_map):
+        # if it's the green light event, we want: "after the light turned green, I"
+        if ph == "the light turned green":
+            parts.append("after the light turned green, I drove on")
+        else:
+            parts.append(ph)
 
-    # 4) Run the summariser
-    summariser = hf_pipeline(
-        "text2text-generation",
-        model="google/flan-t5-large",
-        device_map="auto" if torch.cuda.is_available() else None,
-    )
-    out = summariser(prompt, max_new_tokens=60, do_sample=False)[0]["generated_text"]
-    return out.strip()
+    # Now join with " and "
+    body = " and ".join(parts)
+
+    # Ensure it starts with "I "
+    if body.startswith("passed") or body.startswith("stopped") or body.startswith("took"):
+        summary = "I " + body
+    else:
+        summary = body.capitalize()
+
+    # End with a period
+    if not summary.endswith("."):
+        summary += "."
+
+    return summary
+
 
 
 
