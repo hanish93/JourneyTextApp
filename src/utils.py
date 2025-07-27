@@ -1,4 +1,4 @@
-# src/utils.py  —  High‑signal video‑to‑diary helpers
+# src/utils.py  --  High-signal video-to-diary helpers
 
 import os
 import cv2
@@ -42,7 +42,7 @@ def frames(video_path, fps=1):
 def move(prev, cur, dx=1.5, stop=0.2):
     if prev is None:
         return "drive"
-    f = cv2.calcOpticalFlowFarneback(prev, cur, None, .5, 3, 15, 3, 5, 1.2, 0)
+    f = cv2.calcOpticalFlowFarneback(prev, cur, None, 0.5, 3, 15, 3, 5, 1.2, 0)
     dxm = f[..., 0].mean()
     mag = np.linalg.norm(f, axis=2).mean()
     if mag < stop:
@@ -81,7 +81,7 @@ def signage_names(img, ocr, conf_thresh=0.4):
 def landmarks(img, yolo_model, ocr_reader, conf=0.25):
     r = yolo_model(img, conf=conf, verbose=False)[0]
     names = []
-    # YOLO boxes → OCR
+    # YOLO boxes -> OCR
     for b in r.boxes:
         cls = yolo_model.model.names[int(b.cls[0])]
         if cls not in KEEP:
@@ -90,7 +90,7 @@ def landmarks(img, yolo_model, ocr_reader, conf=0.25):
         txt = " ".join(ocr_reader.readtext(img[y1:y2, x1:x2], detail=0))
         if txt:
             names.append(txt)
-    # Full‑frame signage
+    # Full-frame signage
     names += signage_names(img, ocr_reader)
     return list(dict.fromkeys(names))
 
@@ -112,7 +112,7 @@ def cap_img(img, cap_pipe, hint: str = "") -> str:
     return out["generated_text"]
 
 
-# Summariser (FLAN‑T5‑large)
+# Summariser (FLAN-T5-large)
 tok = AutoTokenizer.from_pretrained("google/flan-t5-large")
 summ = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-large").cpu()
 
@@ -125,7 +125,7 @@ def diary(lines, whitelist, max_lines=40):
         guard = "No place names detected—do NOT invent any.\n"
 
     prompt = (
-        "Write 3‑4 simple first‑person sentences about the drive. "
+        "Write 3-4 simple first-person sentences about the drive. "
         "Ignore people/vehicles; no headings.\n"
         + guard
         + "\n".join(f"- {l}" for l in lines)
