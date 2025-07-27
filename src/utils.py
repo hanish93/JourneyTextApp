@@ -183,65 +183,66 @@ def generate_caption_for_frame(img, proc, mod, landmarks):
 # src/utils.py  — replace your existing generate_long_summary with this:
 
 # src/utils.py
+# src/utils.py
+
 def generate_long_summary(events, *args, **kwargs):
     """
-    Build one concise first-person sentence from your event list.
-    `events` should include only:
-      - 'the signal turned green'
-      - 'passed {Label}'
-      - 'turn_left'
-      - 'turn_right'
-      - optionally 'stop' (we ignore it)
-      - we ignore 'drive'
+    Build a single, concise first‑person journey sentence from your frame events.
     """
-    # 1) Filter out unneeded
-    sigs = [e for e in events if e not in ("drive","stop")]
+    # 1) Filter out drive/stop
+    sigs = [e for e in events if e not in ("drive", "stop")]
 
-    # 2) Collapse consecutive duplicates
+    # 2) Collapse duplicates
     clean = []
     for e in sigs:
         if not clean or clean[-1] != e:
             clean.append(e)
 
-    # 3) Split off everything after the first green
-    summary = "I drove straight"
+    # 3) Handle the green light start
     if "the signal turned green" in clean:
-        summary += " after the light turned green"
-        idx = clean.index("the signal turned green") + 1
-        rest = clean[idx:]
+        gidx = clean.index("the signal turned green")
+        summary = "I drove straight after the light turned green"
+        rem = clean[gidx+1:]
     else:
-        rest = clean
+        summary = "I drove straight"
+        rem = clean
 
-    # 4) Walk through `rest` and build phrases
+    # 4) Walk remaining events
     i = 0
-    while i < len(rest):
-        e = rest[i]
+    while i < len(rem):
+        e = rem[i]
+        # a) group all consecutive passed frames
         if e.startswith("passed "):
-            # collect all consecutive passed
-            labels = []
-            while i < len(rest) and rest[i].startswith("passed "):
-                labels.append(rest[i][len("passed "):])
+            shops = []
+            while i < len(rem) and rem[i].startswith("passed "):
+                shops.append(rem[i][len("passed "):])
                 i += 1
-            # join them
-            summary += " and passed " + " and ".join(labels)
+            if len(shops) == 1:
+                summary += f" and passed {shops[0]}"
+            else:
+                # Oxford comma style
+                summary += " and passed " + ", ".join(shops[:-1]) + f" and {shops[-1]}"
+        # b) single right turn
         elif e == "turn_right":
-            summary += ", then took a slight right"
-            i += 1
+            summary += " and took a slight right"
+            # skip any repeated rights
+            while i < len(rem) and rem[i] == "turn_right":
+                i += 1
+        # c) single left turn
         elif e == "turn_left":
-            summary += ", then turned left"
-            i += 1
+            summary += " and turned left"
+            # skip any repeated lefts
+            while i < len(rem) and rem[i] == "turn_left":
+                i += 1
         else:
-            # safety fallback
+            # unknown event, skip
             i += 1
 
-    # 5) Finish
+    # 5) finish
     summary += " and continued straight."
 
-    # Capitalize first letter
+    # Capitalize
     return summary[0].upper() + summary[1:]
-
-
-
 
 
 # ─── Table helper ─────────────────────────────────────────────────────
