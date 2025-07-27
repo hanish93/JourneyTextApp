@@ -1,4 +1,4 @@
-# src/app.py — glue everything together
+# src/app.py  —  glue everything together
 
 import os
 import cv2
@@ -8,16 +8,24 @@ from glob import glob
 
 from utils import frames, move, load_det, landmarks, load_cap, cap_img, diary, DYNAMIC
 
-
 def run_clip(path, models, dev):
-    # If directory of images
-    if os.path.isdir(path) and any(path.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg"]):
-        imgs = sorted(glob(os.path.join(path, "*.[pj][pn]g")))
-        frame_iter = (cv2.imread(im) for im in imgs)
-    # If directory of videos
-    elif os.path.isdir(path):
-        return "\n\n".join(run_clip(v, models, dev) for v in sorted(glob(os.path.join(path, "*.mp4"))))
+    # ─── Directory? ────────────────────────────────────────
+    if os.path.isdir(path):
+        # 1) look for JPG/PNG frames:
+        img_paths = sorted(glob(os.path.join(path, "*.jpg"))) \
+                  + sorted(glob(os.path.join(path, "*.jpeg"))) \
+                  + sorted(glob(os.path.join(path, "*.png")))
+        if img_paths:
+            frame_iter = (cv2.imread(p) for p in img_paths)
+        else:
+            # 2) look for MP4 videos:
+            vid_paths = sorted(glob(os.path.join(path, "*.mp4")))
+            if vid_paths:
+                return "\n\n".join(run_clip(v, models, dev) for v in vid_paths)
+            else:
+                raise FileNotFoundError(f"No images or videos found in '{path}'")
     else:
+        # Single video file:
         frame_iter = frames(path, fps=1)
 
     yolo, ocr = models["det"]
