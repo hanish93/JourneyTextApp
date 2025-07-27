@@ -7,12 +7,12 @@ import argparse
 import warnings
 import logging
 
-# ── ensure “src/” itself is on the import path ─────────────────────────────
+# ─── ensure 'src/' is on sys.path ───────────────────────────────────
 HERE = os.path.dirname(__file__)
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-from app import run   # now this works even when run as a script
+from app import run   # now imports src/app.py
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Console journey summariser")
     parser.add_argument(
         "--input", "-i", required=True,
-        help="Path to a .mp4 file, directory of .mp4s, or directory of JPG/PNG frames"
+        help="Path to a .mp4 file, folder of .mp4s, or folder of JPG/PNG frames"
     )
     parser.add_argument(
         "--yolo-model", "-m", default=None,
