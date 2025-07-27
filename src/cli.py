@@ -1,17 +1,18 @@
-#!/usr/bin/env python3
-import os, sys
-HERE = os.path.dirname(__file__)
-if HERE not in sys.path: sys.path.insert(0, HERE)
+# src/cli.py
 
-from app import run
+import argparse
+from app import run_pipeline
 
-if __name__=="__main__":
-    import argparse, warnings, logging
-    warnings.filterwarnings("ignore",category=UserWarning)
-    logging.getLogger("ultralytics").setLevel(logging.ERROR)
-
-    p = argparse.ArgumentParser()
-    p.add_argument("-i","--input", required=True, help="JPG folder or MP4")
-    p.add_argument("-m","--yolo-model", default=None, help="Custom YOLO .pt")
+def main():
+    p = argparse.ArgumentParser(
+        description="Console journey summariser"
+    )
+    p.add_argument(
+        "--video", required=True,
+        help="Path to a .mp4 file or directory of frames"
+    )
     args = p.parse_args()
-    run(args.input, args.yolo_model)
+    run_pipeline(args.video)
+
+if __name__ == "__main__":
+    main()
