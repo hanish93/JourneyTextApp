@@ -180,38 +180,36 @@ def generate_caption_for_frame(img, proc, mod, landmarks):
     return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
 # ─── Flan‑T5 long summary ─────────────────────────────────────────────
-from transformers import pipeline as hf_pipeline
+# src/utils.py
 
-def generate_long_summary(events, landmarks, captions, scenes, ocr, stats):
+from transformers import pipeline as hf_pipeline
+import torch
+
+def generate_long_summary(events, *args, **kwargs):
+    """
+    Take the cleaned event list (one bullet per frame)
+    and produce exactly one first‑person sentence summary.
+    """
+    # Load Flan‑T5‑Large on GPU if available
+    device_map = "auto" if torch.cuda.is_available() else None
     summariser = hf_pipeline(
         "text2text-generation",
         model="google/flan-t5-large",
-        device_map="auto" \
-            if torch.cuda.is_available() else None
+        device_map=device_map,
     )
-    lines = []
-    for i,e in enumerate(events):
-        cap = " ".join(w for w in captions[i].split() if w.lower() not in DYNAMIC)
-        lines.append(
-            f"Frame {i+1}: Event={e}, Scene={scenes[i]}, "
-            f"Caption={cap}, Landmark={landmarks[i]}, OCR='{ocr[i]}'"
-        )
-    # build whitelist from sign statistics
-    whitelist = []
-    for bag in stats.values():
-        whitelist.extend(t for t,_ in sorted(
-            bag.items(), key=lambda kv:(-kv[1][0],-kv[1][1])
-        )[:2])
-    guard = (
-        "Use ONLY these place names: "
-        + ", ".join(whitelist)+".\n"
-    ) if whitelist else "Do NOT mention any place names.\n"
+
+    # Build a tiny bullet list of just the events
+    bullets = "\n".join(f"- {e}" for e in events)
+
     prompt = (
-        "Summarise this drive in a friendly first‑person tone, ignoring people/vehicles.\n"
-        + guard + "---\n" + "\n".join(lines) + "\n---\nJourney Summary:"
+        "Write one concise first‑person sentence describing this drive, "
+        "based only on these events:\n"
+        f"{bullets}\n\nSummary:"
     )
-    out = summariser(prompt, max_new_tokens=160, do_sample=False)[0]["generated_text"]
-    return out.split("Journey Summary:")[-1].strip()
+
+    out = summariser(prompt, max_new_tokens=60, do_sample=False)[0]["generated_text"]
+    return out.strip()
+
 
 # ─── Table helper ─────────────────────────────────────────────────────
 def summarise_journey(events, lm, cap, scn, ocr):
