@@ -1,5 +1,11 @@
 # src/utils.py  —  High‑signal video‑to‑diary helpers
-import os, cv2, urllib.request, torch, easyocr, numpy as np
+
+import os
+import cv2
+import urllib.request
+import torch
+import easyocr
+import numpy as np
 from itertools import islice
 from PIL import Image
 from ultralytics import YOLO
@@ -75,7 +81,7 @@ def signage_names(img, ocr, conf_thresh=0.4):
 def landmarks(img, yolo_model, ocr_reader, conf=0.25):
     r = yolo_model(img, conf=conf, verbose=False)[0]
     names = []
-    # 1) YOLO boxes → OCR
+    # YOLO boxes → OCR
     for b in r.boxes:
         cls = yolo_model.model.names[int(b.cls[0])]
         if cls not in KEEP:
@@ -84,7 +90,7 @@ def landmarks(img, yolo_model, ocr_reader, conf=0.25):
         txt = " ".join(ocr_reader.readtext(img[y1:y2, x1:x2], detail=0))
         if txt:
             names.append(txt)
-    # 2) Full-frame signage
+    # Full‑frame signage
     names += signage_names(img, ocr_reader)
     return list(dict.fromkeys(names))
 
@@ -106,6 +112,7 @@ def cap_img(img, cap_pipe, hint: str = "") -> str:
     return out["generated_text"]
 
 
+# Summariser (FLAN‑T5‑large)
 tok = AutoTokenizer.from_pretrained("google/flan-t5-large")
 summ = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-large").cpu()
 
