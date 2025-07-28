@@ -30,14 +30,13 @@ def extract_frames(path, fps=1):
 # ─── MOTION DETECTION ────────────────────────────────────────────────────────
 def detect_event_for_frame(prev_gray, cur_gray, dx_thresh=2.5, stop_thresh=0.3):
     """
-    Compute optical flow between prev_gray and cur_gray, median-filter dx,
-    then classify as drive/stop/turn_left/turn_right.
+    Compute optical flow, median-filter dx, then classify:
+    'drive', 'stop', 'turn_left', or 'turn_right'.
     """
     if prev_gray is None:
         return "drive"
     flow = cv2.calcOpticalFlowFarneback(
-        prev_gray, cur_gray, None,
-        0.5, 3, 15, 3, 5, 1.2, 0
+        prev_gray, cur_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
     )
     dx = flow[..., 0]
     dxm = float(np.median(dx))
@@ -53,11 +52,11 @@ def detect_event_for_frame(prev_gray, cur_gray, dx_thresh=2.5, stop_thresh=0.3):
 
 def debounce_lane_changes(events, window=5):
     """
-    Remove spurious single-frame turn events by requiring at least
-    two occurrences within a ±window.
+    Keep a turn only if it repeats at least once within ±window frames.
+    Otherwise treat as 'drive'.
     """
     out = list(events)
-    n = len(events)
+    n   = len(events)
     for i, e in enumerate(events):
         if e in ("turn_left", "turn_right"):
             cnt = sum(
@@ -72,15 +71,15 @@ def debounce_lane_changes(events, window=5):
 # ─── SIGNAL DETECTION ───────────────────────────────────────────────────────
 def get_yolo_model(device):
     """
-    Load the default yolov8n weights (auto-download if missing).
+    Load default yolov8n weights (auto‑download if missing).
     """
     return YOLO("yolov8n").to(device).half()
 
 def detect_signal_color(frame, yolo, conf=0.1):
     """
-    1) Attempt YOLO traffic‑light detection at low confidence.
-    2) If found, crop the largest box; else fallback to top‑center 20%.
-    3) HSV‑mask for red vs green; require ≥100 pixels.
+    1) Run YOLO traffic‑light detection at low confidence.
+    2) If found, crop largest box; else fallback to top‑center 20%.
+    3) HSV‑mask for red vs green; return only if >=100 pixels.
     """
     res = yolo(frame, conf=conf, verbose=False)[0]
     boxes = []
@@ -97,19 +96,19 @@ def detect_signal_color(frame, yolo, conf=0.1):
         crop = frame[y1:y2, x1:x2]
     else:
         h, w = frame.shape[:2]
-        top = int(0.2 * h)
-        left = int(0.3 * w)
-        right = int(0.7 * w)
+        top    = int(0.2 * h)
+        left   = int(0.3 * w)
+        right  = int(0.7 * w)
         crop = frame[0:top, left:right]
 
     if crop.size == 0:
         return None
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    r1 = cv2.inRange(hsv, (0, 80, 80), (10, 255, 255))
-    r2 = cv2.inRange(hsv, (160, 80, 80), (180, 255, 255))
-    red_mask = cv2.bitwise_or(r1, r2)
-    green_mask = cv2.inRange(hsv, (40, 80, 80), (85, 255, 255))
+    r1  = cv2.inRange(hsv, (0, 80, 80), (10, 255, 255))
+    r2  = cv2.inRange(hsv, (160,80,80), (180,255,255))
+    red_mask   = cv2.bitwise_or(r1, r2)
+    green_mask = cv2.inRange(hsv, (40,80,80), (85,255,255))
 
     rc = int(cv2.countNonZero(red_mask))
     gc = int(cv2.countNonZero(green_mask))
@@ -117,37 +116,34 @@ def detect_signal_color(frame, yolo, conf=0.1):
         return None
     return "red" if rc > gc else "green"
 
-def debounce_signals(states, window=3):
+def debounce_signals(states):
     """
-    Remove spurious single-frame red/green detections by requiring
-    at least two occurrences within a ±window.
+    Only keep a 'red' or 'green' if it appears in >=3 consecutive frames.
+    Otherwise set to None. This collapses runs to a single mention.
     """
-    out = list(states)
-    n = len(states)
-    for i, s in enumerate(states):
+    out = [None] * len(states)
+    n   = len(states)
+    for i in range(n):
+        s = states[i]
         if s in ("red", "green"):
-            cnt = sum(
-                1
-                for j in range(max(0, i - window), min(n, i + window + 1))
-                if states[j] == s
-            )
-            if cnt < 2:
-                out[i] = None
+            # check run of len 3: self ±1
+            start = max(0, i-1)
+            end   = min(n, i+2)
+            cnt   = sum(1 for j in range(start, end) if states[j] == s)
+            if cnt >= 3:
+                out[i] = s
     return out
 
 # ─── SUMMARY GENERATOR ─────────────────────────────────────────────────────
 def generate_long_summary(events, signals, *args, **kwargs):
     """
-    Build a one-sentence journey summary:
-     - 'stopped at the red light' on first red
-     - 'when it turned green, I drove on' on the following green
-     - 'passed X' for each passed event
-     - 'turned left' / 'took a slight right' for each turn
-    Collapses duplicates and joins with 'and'.
+    Build a single sentence:
+    - Announce each red→green only once (after 3-frame run).
+    - Include each 'passed X'.
+    - Include each turn once.
+    - If the journey ends 'drive', append 'continued straight.'
     """
-    parts = []
-    last_sig = None
-
+    parts, last_sig = [], None
     for ev, sig in zip(events, signals):
         if sig == "red" and last_sig != "red":
             parts.append("stopped at the red light")
@@ -165,16 +161,20 @@ def generate_long_summary(events, signals, *args, **kwargs):
     if not parts or not parts[0].startswith("stopped"):
         parts.insert(0, "drove straight")
 
-    # collapse consecutive duplicates
+    # collapse duplicates
     out = [parts[0]]
     for p in parts[1:]:
         if p != out[-1]:
             out.append(p)
 
     # build sentence
-    sent = out[0].capitalize()
+    sentence = out[0].capitalize()
     for p in out[1:]:
-        sent += " and " + p
-    if not sent.endswith("."):
-        sent += "."
-    return sent
+        sentence += " and " + p
+
+    # end "continued straight."
+    if events and events[-1] == "drive":
+        sentence += " continued straight."
+    elif not sentence.endswith("."):
+        sentence += "."
+    return sentence
