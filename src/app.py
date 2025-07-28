@@ -6,16 +6,18 @@ from glob import glob
 
 from .utils import (
     extract_frames,
-    load_light_model, detect_light_state,
-    load_seg_model, detect_road_mask,
-    load_turn_model, detect_turn,
-    generate_long_summary
+    detect_event_for_frame,
+    debounce_lane_changes,
+    get_yolo_model,
+    detect_signal_color,
+    debounce_signals,
+    generate_long_summary,
 )
 
-# your manual frames
-FRAME_WHITELIST = [7,10,77,96,116]
+# your labeled frames
+FRAME_WHITELIST = [7, 10, 77, 96, 116]
 FRAME_LABELS   = [
-    "Tesco Express","CREMA","Townhall","Vue","Wool Pack Hub"
+    "Tesco Express", "CREMA", "Townhall", "Vue", "Wool Pack Hub"
 ]
 
 def run_pipeline(src):
@@ -23,59 +25,50 @@ def run_pipeline(src):
     logging.getLogger("ultralytics").setLevel(logging.ERROR)
     print(f"\n=== Processing {src} (device={dev}) ===\n")
 
-    # load all models
-    light_m = load_light_model(dev)
-    seg_m   = load_seg_model(dev)
-    turn_m  = load_turn_model(dev)
+    yolo = get_yolo_model(dev)
 
-    # buffers
-    events, lights = [], []
-    prev_gray = cur_gray = next_gray = None
+    raw_ev, raw_sig = [], []
+    prev_gray = None
 
-    # prepare iterators
+    # load frames
     if os.path.isdir(src):
-        files = sorted(glob(os.path.join(src,"*.jpg")))
-        frames = [cv2.imread(f) for f in files]
+        paths = sorted(glob(os.path.join(src, "*.jpg")))
+        frames = [cv2.imread(p) for p in paths]
     else:
         frames = list(extract_frames(src))
 
-    # precompute grays
-    grays = [cv2.cvtColor(f,cv2.COLOR_BGR2GRAY) for f in frames]
-    for i,frame in enumerate(frames):
+    for idx, frame in enumerate(frames, start=1):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
         # manual injection
-        if (i+1) in FRAME_WHITELIST:
-            lbl = FRAME_LABELS[FRAME_WHITELIST.index(i+1)]
-            events.append(f"passed {lbl}")
-            lights.append(None)
+        if idx in FRAME_WHITELIST:
+            lbl = FRAME_LABELS[FRAME_WHITELIST.index(idx)]
+            raw_ev.append(f"passed {lbl}")
+            raw_sig.append(None)
+            prev_gray = gray
             continue
 
-        # turn detection (need 3 frames)
-        if i>0 and i< len(frames)-1:
-            ev = detect_turn(grays[i-1], grays[i], grays[i+1], turn_m, dev)
-            if ev == "straight":
-                # fallback to stop/drive by small mag
-                ev = "drive"
-        else:
-            ev = "drive"
-        events.append(ev)
+        # motion
+        ev = detect_event_for_frame(prev_gray, gray)
+        raw_ev.append(ev)
+        prev_gray = gray
 
-        # signal detection
-        lt = detect_light_state(frame, light_m)
-        lights.append(lt)
+        # signal
+        sig = detect_signal_color(frame, yolo)
+        raw_sig.append(sig)
 
-    # debounce events & lights
-    from .utils import debounce_lane_changes, debounce_signals
-    events = debounce_lane_changes(events)
-    lights = debounce_signals(lights)
+    # debounce
+    events  = debounce_lane_changes(raw_ev)
+    signals = debounce_signals(raw_sig)
 
-    # print per-frame
-    print("STEP │ EVENT               │ LIGHT")
+    # per-frame table
+    print("STEP │ EVENT               │ SIGNAL")
     print("─────┼─────────────────────┼────────")
-    for idx,(ev,lt) in enumerate(zip(events,lights), start=1):
-        mark = "⚑" if ev.startswith("passed ") else " "
-        print(f"{idx:3d}  │ {mark}{ev:<19} │ {lt or 'none'}")
+    for i,(e,s) in enumerate(zip(events,signals), start=1):
+        mark = "⚑" if e.startswith("passed ") else " "
+        print(f"{i:3d}  │ {mark}{e:<19} │ {s or 'none'}")
 
     # summary
-    print("\n――――― Final Summary ―――――\n")
-    print(generate_long_summary(events, lights))
+    print("\n―――――  Final summary  ―――――――\n")
+    print(generate_long_summary(events, signals))
     print("\n――――――――――――――――――――\n")
