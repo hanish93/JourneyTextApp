@@ -1,27 +1,48 @@
-import os, cv2, torch, logging
-from .utils import (
+import os
+import cv2
+import torch
+import logging
+from glob import glob
+
+from src.utils import (
     extract_frames,
-    detect_event,
-    load_signal_model, detect_signal_color,
-    FRAME_WHITELIST, FRAME_LABELS,
-    debounce_events, debounce_signals,
-    generate_summary,
+    detect_event_for_frame,
+    debounce_lane_changes,
+    get_yolo_model,
+    detect_signal_color,
+    debounce_signals,
+    generate_long_summary,
 )
 
-def run_pipeline(src):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logging.getLogger("ultralytics").setLevel(logging.ERROR)
-    print(f"\n=== Processing {src} on {device} ===\n")
+# ─── these are your manually‑labelled key frames ─────────────────────────────
+FRAME_WHITELIST = [7, 10, 77, 96, 116]
+FRAME_LABELS   = [
+    "Tesco Express", "CREMA", "Townhall", "Vue", "Wool Pack Hub"
+]
 
-    yolo_sig = load_signal_model(device)
+def run_pipeline(src):
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    logging.getLogger("ultralytics").setLevel(logging.ERROR)
+    print(f"\n=== Processing {src} (device={dev}) ===\n")
+
+    # load your YOLOv8n detector
+    yolo = get_yolo_model(dev)
+
     raw_ev, raw_sig = [], []
     prev_gray = None
 
-    frames = list(extract_frames(src))
+    # read frames either from folder or video
+    if os.path.isdir(src):
+        paths  = sorted(glob(os.path.join(src, "*.jpg")))
+        frames = [cv2.imread(p) for p in paths]
+    else:
+        frames = list(extract_frames(src, fps=1))
+
+    # iterate & detect
     for idx, frame in enumerate(frames, start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # 1) Forced labels?
+        # force your labelled landmarks
         if idx in FRAME_WHITELIST:
             lbl = FRAME_LABELS[FRAME_WHITELIST.index(idx)]
             raw_ev.append(f"passed {lbl}")
@@ -29,35 +50,27 @@ def run_pipeline(src):
             prev_gray = gray
             continue
 
-        # 2) Motion event
-        ev = detect_event(prev_gray, gray)
+        # motion‑based event
+        ev = detect_event_for_frame(prev_gray, gray)
         raw_ev.append(ev)
         prev_gray = gray
 
-        # 3) Traffic‑light color
-        sig = detect_signal_color(frame, yolo_sig)
-        raw_sig.append(sig)
+        # vision‑based signal
+        sg = detect_signal_color(frame, yolo)
+        raw_sig.append(sg)
 
-    evs  = debounce_events(raw_ev)
-    sigs = debounce_signals(raw_sig)
+    # debounce turns & signals
+    evs  = debounce_lane_changes(raw_ev, window=3, min_count=3)
+    sgs  = debounce_signals(raw_sig, window=3)
 
-    # Print per-frame table
-    print("FRAME │ EVENT               │ SIGNAL")
-    print("──────┼─────────────────────┼────────")
-    for i,(e,s) in enumerate(zip(evs,sigs), start=1):
+    # print per‑frame
+    print("STEP │ EVENT               │ SIGNAL")
+    print("─────┼─────────────────────┼────────")
+    for i,(e,s) in enumerate(zip(evs, sgs), start=1):
         mark = "⚑" if e.startswith("passed ") else " "
-        print(f"{i:5d} │{mark}{e:<20}│ {s or 'none'}")
+        print(f"{i:3d}  │ {mark}{e:<19} │ {s or 'none'}")
 
-    # Final summary
-    print("\n――――――  Final summary  ――――――――\n")
-    print(generate_summary(evs, sigs))
-    print("\n" + "―"*40 + "\n")
-
-
-if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--input", required=True,
-                   help="Path to .mp4 or folder of .jpg frames")
-    args = p.parse_args()
-    run_pipeline(args.input)
+    # final sentence
+    print("\n―――――  Final summary  ―――――――\n")
+    print(generate_long_summary(evs, sgs))
+    print("\n――――――――――――――――――――\n")
