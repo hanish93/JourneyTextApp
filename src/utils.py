@@ -1,12 +1,10 @@
 import os
 import cv2
 import numpy as np
-import torch
 from ultralytics import YOLO
 
-# 1) FRAME EXTRACTION ───────────────────────────────────────────────────────
+# ─── FRAME EXTRACTION ────────────────────────────────────────────────────────
 def extract_frames(path, fps=1):
-    """Yield one frame per second from a video or all .jpg in a folder."""
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
             if fn.lower().endswith(".jpg"):
@@ -16,7 +14,7 @@ def extract_frames(path, fps=1):
         return
     cap = cv2.VideoCapture(path)
     nat = cap.get(cv2.CAP_PROP_FPS) or 30
-    step = max(1, round(nat/fps))
+    step = max(1, round(nat / fps))
     idx, ok, frame = 0, *cap.read()
     while ok:
         if idx % step == 0:
@@ -25,99 +23,107 @@ def extract_frames(path, fps=1):
         idx += 1
     cap.release()
 
-# 2) SIGNAL (RED/GREEN) DETECTION ───────────────────────────────────────────
-def load_light_model(device):
-    return YOLO("models/traffic_lights.pt").to(device).half()
+# ─── MOTION DETECTION ────────────────────────────────────────────────────────
+def detect_event_for_frame(prev_gray, cur_gray, dx_thresh=2.5, stop_thresh=0.3):
+    if prev_gray is None:
+        return "drive"
+    f = cv2.calcOpticalFlowFarneback(prev_gray, cur_gray, None,
+                                     0.5, 3, 15, 3, 5, 1.2, 0)
+    dx  = f[...,0].mean()
+    mag = np.linalg.norm(f, axis=2).mean()
+    if mag < stop_thresh:
+        return "stop"
+    if dx > dx_thresh:
+        return "turn_right"
+    if dx < -dx_thresh:
+        return "turn_left"
+    return "drive"
 
-def detect_light_state(frame, model, conf=0.15):
-    """
-    Runs YOLOv8x to detect red_light / green_light / yellow_light.
-    Returns one of {'red','green','yellow',None}.
-    """
-    res = model(frame, conf=conf, verbose=False)[0]
-    for box in res.boxes:
-        cls = model.model.names[int(box.cls[0])]
-        if cls == "red_light":
-            return "red"
-        if cls == "green_light":
-            return "green"
-        if cls == "yellow_light":
-            return "yellow"
-    return None
+def debounce_lane_changes(events, window=5):
+    out = list(events)
+    n   = len(events)
+    for i, e in enumerate(events):
+        if e in ("turn_left","turn_right"):
+            cnt = sum(1 for j in range(max(0,i-window), min(n, i+window+1))
+                      if events[j]==e)
+            if cnt < 2:
+                out[i] = "drive"
+    return out
 
-# 3) ROAD & LANE SEGMENTATION ───────────────────────────────────────────────
-def load_seg_model(device):
-    return YOLO("models/yolov8s-seg.pt").to(device).half()
+# ─── SIGNAL DETECTION ───────────────────────────────────────────────────────
+def get_yolo_model(device):
+    # fetch yolov8n automatically
+    return YOLO(fetch_yolo(), task="detect").to(device).half()
 
-def detect_road_mask(frame, seg_model):
-    """
-    Returns a binary mask of the road/lane area from YOLOv8‑Seg.
-    """
-    seg = seg_model(frame, verbose=False)[0]
-    # assume class 0 = road_surface, class 1 = lane_marking
-    # masks is a list of per-instance binary masks
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    for m,cls in zip(seg.masks.data, seg.masks.cls):
-        # include both road_surface and lane_marking
-        mask = cv2.bitwise_or(mask, (m.cpu().numpy().astype(np.uint8)*255))
-    return mask
+def fetch_yolo():
+    from ultralytics.yolo.utils import yaml_load
+    # This will auto‐download yolov8n.pt if missing
+    return "yolov8n.pt"
 
-# 4) TURN‑DETECTION CNN ─────────────────────────────────────────────────────
-def load_turn_model(device):
-    m = torch.jit.load("models/turn_cnn.pt", map_location=device)
-    m.eval()
-    return m
+def detect_signal_color(frame, yolo, conf=0.2):
+    r = yolo(frame, conf=conf, verbose=False)[0]
+    cands = []
+    for b in r.boxes:
+        cls = yolo.model.names[int(b.cls[0])]
+        if cls != "traffic light":
+            continue
+        x1,y1,x2,y2 = map(int, b.xyxy[0].cpu().numpy())
+        w, h = x2-x1, y2-y1
+        # allow boxes not too squat
+        if h < w * 0.8:
+            continue
+        cands.append((x1,y1,x2,y2))
+    if not cands:
+        return None
+    x1,y1,x2,y2 = max(cands, key=lambda bb:(bb[2]-bb[0])*(bb[3]-bb[1]))
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
 
-def detect_turn(prev_gray, cur_gray, next_gray, model, device):
-    """
-    Compute Farneback flow on (prev→cur) and (cur→next),
-    stack dx/dy flows and magnitude into a 3‑channel tensor,
-    run the CNN to get straight/turn_left/turn_right.
-    """
-    def flow_maps(a,b):
-        f = cv2.calcOpticalFlowFarneback(a,b,None,0.5,3,15,3,5,1.2,0)
-        dx = f[...,0]; dy = f[...,1]
-        mag = np.sqrt(dx*dx+dy*dy)
-        return dx, dy, mag
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    r1  = cv2.inRange(hsv, (0,60,60), (10,255,255))
+    r2  = cv2.inRange(hsv, (160,60,60),(180,255,255))
+    red = cv2.bitwise_or(r1, r2)
+    green = cv2.inRange(hsv, (40,60,60), (85,255,255))
 
-    dx1,dy1,m1 = flow_maps(prev_gray, cur_gray)
-    dx2,dy2,m2 = flow_maps(cur_gray, next_gray)
-    # average
-    dx = (dx1+dx2)/2; dy = (dy1+dy2)/2; mag = (m1+m2)/2
-    # normalize to [0,1]
-    def norm(x):
-        x = x - x.min()
-        return x / (x.max()+1e-6)
-    inp = np.stack([norm(dx), norm(dy), norm(mag)], axis=0)
-    tensor = torch.from_numpy(inp).unsqueeze(0).to(device).float()
-    with torch.no_grad():
-        logits = model(tensor)
-        cls = int(logits.argmax(dim=1)[0])
-    return ["straight","turn_left","turn_right"][cls]
+    rc = int(cv2.countNonZero(red))
+    gc = int(cv2.countNonZero(green))
+    if max(rc,gc) < 200:
+        return None
+    return "red" if rc>gc else "green"
 
-# 5) SUMMARY BUILDER ────────────────────────────────────────────────────────
-def generate_long_summary(events, lights):
-    parts = []
-    last_light = None
+def debounce_signals(states, window=3):
+    out = list(states)
+    n   = len(states)
+    for i, s in enumerate(states):
+        if s in ("red","green"):
+            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
+                      if states[j]==s)
+            if cnt < 2:
+                out[i] = None
+    return out
 
-    for ev, lt in zip(events, lights):
-        if lt == "red" and last_light != "red":
+# ─── SUMMARY ────────────────────────────────────────────────────────────────
+def generate_long_summary(events, signals, *args, **kwargs):
+    parts, last_sig = [], None
+    for ev, sig in zip(events, signals):
+        if sig=="red"   and last_sig!="red":
             parts.append("stopped at the red light")
-        if lt == "green" and last_light == "red":
-            parts.append("when the light turned green, I drove on")
-        last_light = lt or last_light
+        if sig=="green" and last_sig=="red":
+            parts.append("when it turned green, I drove on")
+        last_sig = sig or last_sig
 
         if ev.startswith("passed "):
             parts.append(f"passed {ev.split(' ',1)[1]}")
-        if ev == "turn_left":
+        if ev=="turn_left":
             parts.append("turned left")
-        if ev == "turn_right":
+        if ev=="turn_right":
             parts.append("took a slight right")
 
     if not parts or not parts[0].startswith("stopped"):
         parts.insert(0, "drove straight")
 
-    # collapse repeats
+    # collapse duplicates
     out = [parts[0]]
     for p in parts[1:]:
         if p != out[-1]:
@@ -127,4 +133,3 @@ def generate_long_summary(events, lights):
     for p in out[1:]:
         sent += " and " + p
     return sent + ("" if sent.endswith(".") else ".")
-
