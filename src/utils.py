@@ -5,7 +5,7 @@ from ultralytics import YOLO
 
 # ─── FRAME EXTRACTION ────────────────────────────────────────────────────────
 def extract_frames(path, fps=1):
-    """Yield one frame per second from a video or all .jpg in a folder."""
+    """Yield one frame per second from a .mp4 or all .jpg in a folder."""
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
             if fn.lower().endswith(".jpg"):
@@ -64,96 +64,79 @@ def get_yolo_model(device):
 
 def detect_signal_color(frame, yolo, conf=0.1):
     """
-    Run YOLO traffic‑light → crop largest box or top band → HSV mask red/green.
+    YOLO traffic‑light → crop box or top band → HSV mask red/green.
     Returns "red", "green", or None.
     """
-    r = yolo(frame, conf=conf, verbose=False)[0]
+    res = yolo(frame, conf=conf, verbose=False)[0]
     boxes = []
-    for b in r.boxes:
+    for b in res.boxes:
         cls = yolo.model.names[int(b.cls[0])]
         if cls == "traffic light":
             x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
             boxes.append((x1, y1, x2, y2))
     if boxes:
-        x1, y1, x2, y2 = max(
-            boxes, key=lambda bb: (bb[2] - bb[0]) * (bb[3] - bb[1])
-        )
+        x1, y1, x2, y2 = max(boxes, key=lambda bb: (bb[2]-bb[0])*(bb[3]-bb[1]))
         crop = frame[y1:y2, x1:x2]
     else:
         h, w = frame.shape[:2]
-        top = int(0.2 * h)
-        left = int(0.3 * w)
-        right = int(0.7 * w)
+        top = int(0.2*h); left = int(0.3*w); right = int(0.7*w)
         crop = frame[0:top, left:right]
     if crop.size == 0:
         return None
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    r1 = cv2.inRange(hsv, (0, 80, 80), (10, 255, 255))
-    r2 = cv2.inRange(hsv, (160, 80, 80), (180, 255, 255))
+    r1 = cv2.inRange(hsv, (0,80,80), (10,255,255))
+    r2 = cv2.inRange(hsv, (160,80,80), (180,255,255))
     red_mask = cv2.bitwise_or(r1, r2)
-    green_mask = cv2.inRange(hsv, (40, 80, 80), (85, 255, 255))
-    rc = int(cv2.countNonZero(red_mask))
-    gc = int(cv2.countNonZero(green_mask))
+    green_mask = cv2.inRange(hsv, (40,80,80), (85,255,255))
+    rc, gc = int(cv2.countNonZero(red_mask)), int(cv2.countNonZero(green_mask))
     if max(rc, gc) < 100:
         return None
     return "red" if rc > gc else "green"
 
 def debounce_signals(states, window=3):
-    """
-    Only keep a red/green if it appears ≥3 times in ±window frames.
-    """
-    out = [None] * len(states)
+    """Only keep a red/green if it appears ≥3 times in ±window frames."""
+    out = [None]*len(states)
     n = len(states)
-    for i, s in enumerate(states):
-        if s in ("red", "green"):
+    for i,s in enumerate(states):
+        if s in ("red","green"):
             cnt = sum(
                 1
-                for j in range(max(0, i - window), min(n, i + window + 1))
-                if states[j] == s
+                for j in range(max(0,i-window), min(n,i+window+1))
+                if states[j]==s
             )
-            if cnt >= 3:
+            if cnt>=3:
                 out[i] = s
     return out
 
-# ─── ONE‑SENTENCE SUMMARY ────────────────────────────────────────────────────
+# ─── SUMMARY BUILDER ─────────────────────────────────────────────────────────
 def summarise_frames(events, signals):
     """
-    Build your single-sentence summary from parallel lists:
-      - events[i] ∈ {"drive","stop","turn_left","turn_right","passed X"}
-      - signals[i] ∈ {None,"red","green"}
+    Build the one‑sentence journey summary from events & signals lists.
     """
     n = len(events)
-
     def find_run(start, val):
         i = start
-        while i < n and signals[i] != val:
+        while i<n and signals[i]!=val:
             i += 1
-        if i >= n:
-            return None, None
+        if i>=n: return None, None
         j = i
-        while j < n and signals[j] == val:
+        while j<n and signals[j]==val:
             j += 1
         return i, j
 
     def collect_passes(a, b):
-        names = []
-        for e in events[a:b]:
-            if e.startswith("passed "):
-                names.append(e.split(" ", 1)[1])
-        return names
+        return [e.split(" ",1)[1] for e in events[a:b] if e.startswith("passed ")]
 
     parts = []
     idx = 0
 
-    # initial red-run
-    r0, r0e = find_run(0, "red")
+    r0, r0e = find_run(0,"red")
     if r0 is not None:
         parts.append("I stopped at the red light")
         idx = r0e
     else:
         parts.append("I drove straight")
 
-    # passes before next red
     names = collect_passes(idx, r0 or n)
     if names:
         parts.append("passed " + " and ".join(names))
@@ -161,8 +144,7 @@ def summarise_frames(events, signals):
         parts.append("stopped at the red light again")
         idx = r0e
 
-    # passes before second red
-    r1, r1e = find_run(idx, "red")
+    r1, r1e = find_run(idx,"red")
     names = collect_passes(idx, r1 or n)
     if names:
         parts.append("drove on and passed " + " and ".join(names))
@@ -170,15 +152,12 @@ def summarise_frames(events, signals):
         parts.append("stopped at the red light once more")
         idx = r1e
 
-    # final passes
     names = collect_passes(idx, n)
     if names:
         parts.append("passed " + " and ".join(names))
 
-    # always end with continued straight
     parts.append("continued straight")
 
-    # join into one sentence
     sent = parts[0]
     for p in parts[1:]:
         sent += ", then " + p
