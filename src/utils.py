@@ -133,47 +133,56 @@ def generate_summary(events, signals):
     parts, last_sig = [], None
 
     for idx, (e,s) in enumerate(zip(events, signals), start=1):
-        # first frame red?
+        # 1) initial red
         if idx == 1 and s == "red":
-            parts.append("Stopped at the red light")
+            parts.append("stopped at the red light")
             last_sig = "red"
             continue
 
-        # green following a red
+        # 2) green after red
         if last_sig == "red" and s == "green":
             parts.append("once it turned green, I drove on")
             last_sig = "green"
 
-        # passed landmarks
+        # 3) landmark passes
         if e.startswith("passed "):
             name = e.split(" ",1)[1]
             parts.append(f"passed {name}")
 
-        # turns
+        # 4) turns (already debounced for >=3 frames)
         if e == "turn_left":
-            parts.append("then turned left")
-        if e == "turn_right":
-            parts.append("then took a slight right")
+            parts.append("turned left")
+        elif e == "turn_right":
+            parts.append("took a slight right")
 
-        # new red (after green or none)
+        # 5) new red (after something else)
         if s == "red" and last_sig != "red":
             parts.append("then stopped at the red light")
             last_sig = "red"
 
-    # if no explicit “Stopped…” at start, mark a drive
-    if not parts or not parts[0].startswith("Stopped"):
-        parts.insert(0, "Drove straight")
+    # If nothing ever stopped us at start, mark that we began by driving straight
+    if not parts or not parts[0].startswith("stopped"):
+        parts.insert(0, "drove straight")
 
-    # dedupe
+    # Dedupe consecutive duplicates
     clean = [parts[0]]
     for p in parts[1:]:
         if p != clean[-1]:
             clean.append(p)
 
-    # build sentence
+    # Build the sentence
     sent = clean[0].capitalize()
     for p in clean[1:]:
-        sent += " and " + p
-    if not sent.endswith("."):
-        sent += "."
+        # ensure “then” only where it makes sense:
+        if p.startswith("passed") or p.startswith("turned") or p.startswith("took"):
+            sent += " and " + p
+        else:
+            sent += ", " + p
+
+    # Always end by continuing straight, if final action wasn’t “stopped at…”
+    if events and events[-1] in ("drive",) or any(ev.startswith("passed ") for ev in events[-1:]):
+        sent += " and continued straight."
+    else:
+        sent = sent.rstrip('.') + "."
+
     return sent
