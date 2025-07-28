@@ -5,6 +5,9 @@ from ultralytics import YOLO
 
 # ─── FRAME EXTRACTION ────────────────────────────────────────────────────────
 def extract_frames(path, fps=1):
+    """
+    Yield one frame per second from a video, or all .jpg images in a folder.
+    """
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
             if fn.lower().endswith(".jpg"):
@@ -12,6 +15,7 @@ def extract_frames(path, fps=1):
                 if img is not None:
                     yield img
         return
+
     cap = cv2.VideoCapture(path)
     nat = cap.get(cv2.CAP_PROP_FPS) or 30
     step = max(1, round(nat / fps))
@@ -25,105 +29,152 @@ def extract_frames(path, fps=1):
 
 # ─── MOTION DETECTION ────────────────────────────────────────────────────────
 def detect_event_for_frame(prev_gray, cur_gray, dx_thresh=2.5, stop_thresh=0.3):
+    """
+    Compute optical flow between prev_gray and cur_gray, median-filter dx,
+    then classify as drive/stop/turn_left/turn_right.
+    """
     if prev_gray is None:
         return "drive"
-    flow = cv2.calcOpticalFlowFarneback(prev_gray, cur_gray, None,
-                                        0.5, 3, 15, 3, 5, 1.2, 0)
-    dx  = flow[...,0].mean()
-    mag = np.linalg.norm(flow, axis=2).mean()
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_gray, cur_gray, None,
+        0.5, 3, 15, 3, 5, 1.2, 0
+    )
+    dx = flow[..., 0]
+    dxm = float(np.median(dx))
+    mag = float(np.linalg.norm(flow, axis=2).mean())
+
     if mag < stop_thresh:
         return "stop"
-    if dx > dx_thresh:
+    if dxm > dx_thresh:
         return "turn_right"
-    if dx < -dx_thresh:
+    if dxm < -dx_thresh:
         return "turn_left"
     return "drive"
 
 def debounce_lane_changes(events, window=5):
+    """
+    Remove spurious single-frame turn events by requiring at least
+    two occurrences within a ±window.
+    """
     out = list(events)
-    n   = len(events)
+    n = len(events)
     for i, e in enumerate(events):
-        if e in ("turn_left","turn_right"):
-            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
-                      if events[j]==e)
+        if e in ("turn_left", "turn_right"):
+            cnt = sum(
+                1
+                for j in range(max(0, i - window), min(n, i + window + 1))
+                if events[j] == e
+            )
             if cnt < 2:
                 out[i] = "drive"
     return out
 
 # ─── SIGNAL DETECTION ───────────────────────────────────────────────────────
 def get_yolo_model(device):
-    # Uses ultralytics' default yolov8n weights (auto‑download if missing)
-    model = YOLO("yolov8n").to(device).half()
-    return model
+    """
+    Load the default yolov8n weights (auto-download if missing).
+    """
+    return YOLO("yolov8n").to(device).half()
 
-def detect_signal_color(frame, yolo, conf=0.2):
-    r = yolo(frame, conf=conf, verbose=False)[0]
-    cands = []
-    for b in r.boxes:
+def detect_signal_color(frame, yolo, conf=0.1):
+    """
+    1) Attempt YOLO traffic‑light detection at low confidence.
+    2) If found, crop the largest box; else fallback to top‑center 20%.
+    3) HSV‑mask for red vs green; require ≥100 pixels.
+    """
+    res = yolo(frame, conf=conf, verbose=False)[0]
+    boxes = []
+    for b in res.boxes:
         cls = yolo.model.names[int(b.cls[0])]
-        if cls != "traffic light":
-            continue
-        x1,y1,x2,y2 = map(int, b.xyxy[0].cpu().numpy())
-        w, h = x2-x1, y2-y1
-        if h < w * 0.8:
-            continue
-        cands.append((x1,y1,x2,y2))
-    if not cands:
-        return None
-    x1,y1,x2,y2 = max(cands, key=lambda bb:(bb[2]-bb[0])*(bb[3]-bb[1]))
-    crop = frame[y1:y2, x1:x2]
+        if cls == "traffic light":
+            x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
+            boxes.append((x1, y1, x2, y2))
+
+    if boxes:
+        x1, y1, x2, y2 = max(
+            boxes, key=lambda bb: (bb[2] - bb[0]) * (bb[3] - bb[1])
+        )
+        crop = frame[y1:y2, x1:x2]
+    else:
+        h, w = frame.shape[:2]
+        top = int(0.2 * h)
+        left = int(0.3 * w)
+        right = int(0.7 * w)
+        crop = frame[0:top, left:right]
+
     if crop.size == 0:
         return None
 
-    hsv   = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    r1    = cv2.inRange(hsv, (0,60,60), (10,255,255))
-    r2    = cv2.inRange(hsv, (160,60,60), (180,255,255))
-    red   = cv2.bitwise_or(r1, r2)
-    green = cv2.inRange(hsv, (40,60,60), (85,255,255))
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    r1 = cv2.inRange(hsv, (0, 80, 80), (10, 255, 255))
+    r2 = cv2.inRange(hsv, (160, 80, 80), (180, 255, 255))
+    red_mask = cv2.bitwise_or(r1, r2)
+    green_mask = cv2.inRange(hsv, (40, 80, 80), (85, 255, 255))
 
-    rc = int(cv2.countNonZero(red))
-    gc = int(cv2.countNonZero(green))
-    if max(rc,gc) < 200:
+    rc = int(cv2.countNonZero(red_mask))
+    gc = int(cv2.countNonZero(green_mask))
+    if max(rc, gc) < 100:
         return None
-    return "red" if rc>gc else "green"
+    return "red" if rc > gc else "green"
 
 def debounce_signals(states, window=3):
+    """
+    Remove spurious single-frame red/green detections by requiring
+    at least two occurrences within a ±window.
+    """
     out = list(states)
-    n   = len(states)
+    n = len(states)
     for i, s in enumerate(states):
-        if s in ("red","green"):
-            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
-                      if states[j]==s)
+        if s in ("red", "green"):
+            cnt = sum(
+                1
+                for j in range(max(0, i - window), min(n, i + window + 1))
+                if states[j] == s
+            )
             if cnt < 2:
                 out[i] = None
     return out
 
-# ─── SUMMARY ────────────────────────────────────────────────────────────────
+# ─── SUMMARY GENERATOR ─────────────────────────────────────────────────────
 def generate_long_summary(events, signals, *args, **kwargs):
-    parts, last_sig = [], None
+    """
+    Build a one-sentence journey summary:
+     - 'stopped at the red light' on first red
+     - 'when it turned green, I drove on' on the following green
+     - 'passed X' for each passed event
+     - 'turned left' / 'took a slight right' for each turn
+    Collapses duplicates and joins with 'and'.
+    """
+    parts = []
+    last_sig = None
+
     for ev, sig in zip(events, signals):
-        if sig=="red"   and last_sig!="red":
+        if sig == "red" and last_sig != "red":
             parts.append("stopped at the red light")
-        if sig=="green" and last_sig=="red":
+        if sig == "green" and last_sig == "red":
             parts.append("when it turned green, I drove on")
         last_sig = sig or last_sig
 
         if ev.startswith("passed "):
             parts.append(f"passed {ev.split(' ',1)[1]}")
-        if ev=="turn_left":
+        if ev == "turn_left":
             parts.append("turned left")
-        if ev=="turn_right":
+        if ev == "turn_right":
             parts.append("took a slight right")
 
     if not parts or not parts[0].startswith("stopped"):
         parts.insert(0, "drove straight")
 
+    # collapse consecutive duplicates
     out = [parts[0]]
     for p in parts[1:]:
         if p != out[-1]:
             out.append(p)
 
+    # build sentence
     sent = out[0].capitalize()
     for p in out[1:]:
         sent += " and " + p
-    return sent + ("" if sent.endswith(".") else ".")
+    if not sent.endswith("."):
+        sent += "."
+    return sent
