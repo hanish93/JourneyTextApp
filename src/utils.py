@@ -57,19 +57,19 @@ def debounce_lane_changes(events, window=5):
                 out[i] = "drive"
     return out
 
-# ─── SIGNAL DETECTION ───────────────────────────────────────────────────────
+# ─── TRAFFIC‑LIGHT DETECTION ─────────────────────────────────────────────────
 def get_yolo_model(device):
     """Load yolov8n for traffic‑light detection."""
     return YOLO("yolov8n").to(device).half()
 
 def detect_signal_color(frame, yolo, conf=0.1):
     """
-    YOLO traffic‑light → crop largest box or top window → HSV mask red/green.
-    Return "red", "green", or None.
+    Run YOLO traffic‑light → crop largest box or top band → HSV mask red/green.
+    Returns "red", "green", or None.
     """
-    res = yolo(frame, conf=conf, verbose=False)[0]
+    r = yolo(frame, conf=conf, verbose=False)[0]
     boxes = []
-    for b in res.boxes:
+    for b in r.boxes:
         cls = yolo.model.names[int(b.cls[0])]
         if cls == "traffic light":
             x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
@@ -115,13 +115,12 @@ def debounce_signals(states, window=3):
                 out[i] = s
     return out
 
-# ─── FRAME‑BASED SUMMARY ────────────────────────────────────────────────────
+# ─── ONE‑SENTENCE SUMMARY ────────────────────────────────────────────────────
 def summarise_frames(events, signals):
     """
-    Build a single-sentence summary from the two parallel lists:
-      - events[i] in {"drive","stop","turn_left","turn_right","passed X"}
-      - signals[i] in {None,"red","green"}
-    Following your “runs” rules exactly.
+    Build your single-sentence summary from parallel lists:
+      - events[i] ∈ {"drive","stop","turn_left","turn_right","passed X"}
+      - signals[i] ∈ {None,"red","green"}
     """
     n = len(events)
 
@@ -146,7 +145,7 @@ def summarise_frames(events, signals):
     parts = []
     idx = 0
 
-    # first red run
+    # initial red-run
     r0, r0e = find_run(0, "red")
     if r0 is not None:
         parts.append("I stopped at the red light")
@@ -154,7 +153,7 @@ def summarise_frames(events, signals):
     else:
         parts.append("I drove straight")
 
-    # first passes → next red
+    # passes before next red
     names = collect_passes(idx, r0 or n)
     if names:
         parts.append("passed " + " and ".join(names))
@@ -162,7 +161,7 @@ def summarise_frames(events, signals):
         parts.append("stopped at the red light again")
         idx = r0e
 
-    # second passes → next red
+    # passes before second red
     r1, r1e = find_run(idx, "red")
     names = collect_passes(idx, r1 or n)
     if names:
@@ -176,8 +175,10 @@ def summarise_frames(events, signals):
     if names:
         parts.append("passed " + " and ".join(names))
 
+    # always end with continued straight
     parts.append("continued straight")
 
+    # join into one sentence
     sent = parts[0]
     for p in parts[1:]:
         sent += ", then " + p
