@@ -51,10 +51,11 @@ def detect_signal_color(frame, model, conf=0.1):
 def generate_full_summary(passes, signals, labels, frame_count):
     """
     Build a single English sentence from:
-      - passes: sorted list of frame indices (ints) where you 'passed X'
+      - passes: sorted list of frame indices where you 'passed X'
       - signals: list[str] of length frame_count, each 'red'/'green'/None
-      - labels: dict {frame_idx: "Landmark Name"}
+      - labels: dict {frame_idx: landmark_name}
     """
+
     # 1) group any two passes <5 frames apart
     groups = []
     for f in passes:
@@ -70,24 +71,28 @@ def generate_full_summary(passes, signals, labels, frame_count):
         start = grp[0]
         end   = grp[-1]
 
-        # stop at red if any red in [cur, start)
-        if any(signals[i]=="red" for i in range(cur, start)):
+        # --- RED‑LIGHT HANDOFF ---
+        if any(signals[i] == "red" for i in range(cur, start)):
             parts.append("stopped at the red light")
+            parts.append("once it turned green, I drove on")
 
-        # emit the landmarks in this group
+        # --- PASSING LANDMARKS ---
         names = [labels[f] for f in grp]
         parts.append("then passed " + " and ".join(names))
 
         cur = end + 1
 
-    # tail: another red?
-    if any(signals[i]=="red" for i in range(cur, frame_count)):
-        parts.append("stopped at the red light once more")
+    # --- FINAL TAIL if you end on red again ---
+    if any(signals[i] == "red" for i in range(cur, frame_count)):
+        parts.append("stopped at the red light")
+        parts.append("once it turned green, I drove on")
 
+    # always finish by continuing straight
     parts.append("continued straight")
 
-    # stitch into one sentence
+    # --- STITCH INTO ONE SENTENCE ---
     sent = parts[0].capitalize()
     for p in parts[1:]:
         sent += ", " + p
     return sent + "."
+
