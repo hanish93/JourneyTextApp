@@ -3,9 +3,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# ─── FRAME EXTRACTION ────────────────────────────────────────────────────────
 def extract_frames(path, fps=1):
-    """Yield one frame per second from a .mp4 or all .jpg in a folder."""
     if os.path.isdir(path):
         for fn in sorted(os.listdir(path)):
             if fn.lower().endswith(".jpg"):
@@ -24,141 +22,145 @@ def extract_frames(path, fps=1):
         idx += 1
     cap.release()
 
-# ─── MOTION DETECTION ────────────────────────────────────────────────────────
 def detect_event_for_frame(prev_gray, cur_gray, dx_thresh=2.5, stop_thresh=0.3):
-    """Optical‑flow median dx → drive/stop/turn_left/turn_right."""
     if prev_gray is None:
         return "drive"
-    flow = cv2.calcOpticalFlowFarneback(
-        prev_gray, cur_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
-    )
-    dxm = float(np.median(flow[..., 0]))
-    mag = float(np.linalg.norm(flow, axis=2).mean())
-    if mag < stop_thresh:
-        return "stop"
-    if dxm > dx_thresh:
-        return "turn_right"
-    if dxm < -dx_thresh:
-        return "turn_left"
+    flow = cv2.calcOpticalFlowFarneback(prev_gray, cur_gray, None,
+                                        0.5,3,15,3,5,1.2,0)
+    dxm = float(np.median(flow[...,0]))
+    mag = float(np.linalg.norm(flow,axis=2).mean())
+    if mag < stop_thresh:    return "stop"
+    if dxm > dx_thresh:      return "turn_right"
+    if dxm < -dx_thresh:     return "turn_left"
     return "drive"
 
 def debounce_lane_changes(events, window=5):
-    """Only keep a turn if it repeats ≥2 times within ±window."""
     out = list(events)
     n = len(events)
-    for i, e in enumerate(events):
-        if e in ("turn_left", "turn_right"):
-            cnt = sum(
-                1
-                for j in range(max(0, i - window), min(n, i + window + 1))
-                if events[j] == e
-            )
+    for i,e in enumerate(events):
+        if e in ("turn_left","turn_right"):
+            cnt = sum(1 for j in range(max(0,i-window),
+                                       min(n,i+window+1))
+                      if events[j]==e)
             if cnt < 2:
                 out[i] = "drive"
     return out
 
-# ─── TRAFFIC‑LIGHT DETECTION ─────────────────────────────────────────────────
 def get_yolo_model(device):
-    """Load yolov8n for traffic‑light detection."""
     return YOLO("yolov8n").to(device).half()
 
 def detect_signal_color(frame, yolo, conf=0.1):
-    """
-    YOLO traffic‑light → crop box or top band → HSV mask red/green.
-    Returns "red", "green", or None.
-    """
-    res = yolo(frame, conf=conf, verbose=False)[0]
+    r = yolo(frame, conf=conf, verbose=False)[0]
     boxes = []
-    for b in res.boxes:
+    for b in r.boxes:
         cls = yolo.model.names[int(b.cls[0])]
         if cls == "traffic light":
-            x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
-            boxes.append((x1, y1, x2, y2))
+            x1,y1,x2,y2 = map(int,b.xyxy[0].cpu().numpy())
+            boxes.append((x1,y1,x2,y2))
     if boxes:
-        x1, y1, x2, y2 = max(boxes, key=lambda bb: (bb[2]-bb[0])*(bb[3]-bb[1]))
+        x1,y1,x2,y2 = max(boxes, key=lambda bb:(bb[2]-bb[0])*(bb[3]-bb[1]))
         crop = frame[y1:y2, x1:x2]
     else:
-        h, w = frame.shape[:2]
-        top = int(0.2*h); left = int(0.3*w); right = int(0.7*w)
+        h,w = frame.shape[:2]
+        top = int(0.2*h)
+        left, right = int(0.3*w), int(0.7*w)
         crop = frame[0:top, left:right]
     if crop.size == 0:
         return None
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     r1 = cv2.inRange(hsv, (0,80,80), (10,255,255))
     r2 = cv2.inRange(hsv, (160,80,80), (180,255,255))
-    red_mask = cv2.bitwise_or(r1, r2)
-    green_mask = cv2.inRange(hsv, (40,80,80), (85,255,255))
-    rc, gc = int(cv2.countNonZero(red_mask)), int(cv2.countNonZero(green_mask))
-    if max(rc, gc) < 100:
+    red = cv2.bitwise_or(r1,r2)
+    green = cv2.inRange(hsv, (40,80,80), (85,255,255))
+    rc, gc = int(cv2.countNonZero(red)), int(cv2.countNonZero(green))
+    if max(rc,gc) < 100:
         return None
-    return "red" if rc > gc else "green"
+    return "red" if rc>gc else "green"
 
 def debounce_signals(states, window=3):
-    """Only keep a red/green if it appears ≥3 times in ±window frames."""
     out = [None]*len(states)
     n = len(states)
     for i,s in enumerate(states):
         if s in ("red","green"):
-            cnt = sum(
-                1
-                for j in range(max(0,i-window), min(n,i+window+1))
-                if states[j]==s
-            )
-            if cnt>=3:
+            cnt = sum(1 for j in range(max(0,i-window),
+                                       min(n,i+window+1))
+                      if states[j]==s)
+            if cnt >= 3:
                 out[i] = s
     return out
 
-# ─── SUMMARY BUILDER ─────────────────────────────────────────────────────────
-def summarise_frames(events, signals):
-    """
-    Build the one‑sentence journey summary from events & signals lists.
-    """
-    n = len(events)
-    def find_run(start, val):
-        i = start
-        while i<n and signals[i]!=val:
-            i += 1
-        if i>=n: return None, None
-        j = i
-        while j<n and signals[j]==val:
-            j += 1
-        return i, j
-
-    def collect_passes(a, b):
-        return [e.split(" ",1)[1] for e in events[a:b] if e.startswith("passed ")]
+def generate_long_summary(events, signals):
+    # 1) find all landmark passes
+    passes = [(i, e.split(" ",1)[1])
+              for i,e in enumerate(events)
+              if e.startswith("passed ")]
+    # 2) find all red-light spans
+    spans = []
+    in_red = False
+    for i,s in enumerate(signals):
+        if s=="red" and not in_red:
+            start = i
+            in_red = True
+        if in_red and s!="red":
+            spans.append((start, i-1))
+            in_red = False
+    if in_red:
+        spans.append((start, len(signals)-1))
 
     parts = []
-    idx = 0
 
-    r0, r0e = find_run(0,"red")
-    if r0 is not None:
+    # Segment 1: from 0 to first pass
+    first_pass_i, _ = passes[0]
+    # if red in [0, first_pass_i)
+    if any(signals[j]=="red" for j in range(0, first_pass_i)):
         parts.append("I stopped at the red light")
-        idx = r0e
+    # all passes up to first_pass_i
+    names = [name for i,name in passes if i <= first_pass_i]
+    parts.append("then passed " + " and ".join(names))
+
+    # Segment 2: after first pass to next red
+    seg2_start = first_pass_i+1
+    next_red = next((st for st,en in spans if st>=seg2_start), None)
+    if next_red:
+        parts.append("then continued straight for a while")
     else:
-        parts.append("I drove straight")
+        next_red = seg2_start
 
-    names = collect_passes(idx, r0 or n)
-    if names:
-        parts.append("passed " + " and ".join(names))
-    if r0 is not None:
-        parts.append("stopped at the red light again")
-        idx = r0e
+    # Segment 3: at that red run
+    span3 = next((sp for sp in spans if sp[0]==next_red), None)
+    if span3:
+        parts.append("then stopped at the red light again")
+        # find the pass immediately after span3
+        after3 = next((name for i,name in passes if i>span3[1]), None)
+        parts.append(f"then once it turned green, crossed {after3}")
 
-    r1, r1e = find_run(idx,"red")
-    names = collect_passes(idx, r1 or n)
-    if names:
-        parts.append("drove on and passed " + " and ".join(names))
-    if r1 is not None:
-        parts.append("stopped at the red light once more")
-        idx = r1e
+    # Segment 4: between that and next red
+    if span3:
+        seg4_start = span3[1]+1
+    else:
+        seg4_start = seg2_start
+    # next red after span3
+    span4 = next((sp for sp in spans if sp[0]>=seg4_start and sp!=span3), None)
+    if span4:
+        # find the pass before span4
+        before4 = next((name for i,name in reversed(passes) if i<span4[0]), None)
+        parts.append(f"then drove on past {before4}")
+    else:
+        # if no more red, take next pass
+        remaining = [name for i,name in passes if i>first_pass_i]
+        if remaining:
+            parts.append(f"then drove on past {remaining[1]}")
 
-    names = collect_passes(idx, n)
-    if names:
-        parts.append("passed " + " and ".join(names))
+    # Segment 5: final red & pass
+    last_span = spans[-1] if spans else None
+    if last_span and last_span[0] > (span3[1] if span3 else 0):
+        parts.append("then stopped at the red light once more")
+    last_name = passes[-1][1]
+    parts.append(f"then passed {last_name}")
+    parts.append("and continued straight")
 
-    parts.append("continued straight")
-
-    sent = parts[0]
+    # glue into one sentence
+    sent = parts[0].capitalize()
     for p in parts[1:]:
-        sent += ", then " + p
+        sent += ", " + p
     return sent + "."
