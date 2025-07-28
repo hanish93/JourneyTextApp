@@ -1,68 +1,47 @@
-import os
-import cv2
-import torch
-import logging
-from glob import glob
-
-from .utils import (
+import argparse, torch
+from utils import (
     extract_frames,
-    detect_event_for_frame,
-    debounce_lane_changes,
-    get_yolo_model,
-    detect_signal_color,
-    debounce_signals,
-    generate_long_summary,
+    detect_event_for_frame, debounce_lane_changes,
+    get_yolo_model, detect_signal_color, debounce_signals,
+    summarise_frames,
 )
+import cv2
 
-# your five labeled frames
-FRAME_WHITELIST = [7, 10, 77, 96, 116]
-FRAME_LABELS   = [
-    "Tesco Express", "CREMA", "Townhall", "Vue", "Wool Pack Hub"
-]
+def run_pipeline(target):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[Models] loading YOLOv8n on {device}…")
+    yolo = get_yolo_model(device)
+    print("[Models] done.\n")
 
-def run_pipeline(src):
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
-    logging.getLogger("ultralytics").setLevel(logging.ERROR)
-    print(f"\n=== Processing {src} (device={dev}) ===\n")
-
-    yolo = get_yolo_model(dev)
-
-    raw_ev, raw_sig = [], []
     prev_gray = None
+    raw_events, raw_signals = [], []
 
-    # load frames from folder or video
-    if os.path.isdir(src):
-        paths  = sorted(glob(os.path.join(src, "*.jpg")))
-        frames = [cv2.imread(p) for p in paths]
-    else:
-        frames = list(extract_frames(src))
-
-    for idx, frame in enumerate(frames, start=1):
+    print("[Frames] extracting & analyzing…")
+    for i, frame in enumerate(extract_frames(target, fps=1), start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        if idx in FRAME_WHITELIST:
-            lbl = FRAME_LABELS[FRAME_WHITELIST.index(idx)]
-            raw_ev .append(f"passed {lbl}")
-            raw_sig.append(None)
-            prev_gray = gray
-            continue
-
+        # 1) motion event
         ev = detect_event_for_frame(prev_gray, gray)
-        raw_ev.append(ev)
+        raw_events.append(ev)
+
+        # 2) signal color
+        sig = detect_signal_color(frame, yolo)
+        raw_signals.append(sig)
+
         prev_gray = gray
 
-        sig = detect_signal_color(frame, yolo)
-        raw_sig.append(sig)
+    print("[Frames] debouncing…")
+    events = debounce_lane_changes(raw_events)
+    signals = debounce_signals(raw_signals)
 
-    events  = debounce_lane_changes(raw_ev)
-    signals = debounce_signals(raw_sig)
+    print("\n=== Final summary ===")
+    summary = summarise_frames(events, signals)
+    print(summary)
 
-    print("STEP │ EVENT               │ SIGNAL")
-    print("─────┼─────────────────────┼────────")
-    for i,(e,s) in enumerate(zip(events, signals), start=1):
-        mark = "⚑" if e.startswith("passed ") else " "
-        print(f"{i:3d}  │ {mark}{e:<19} │ {s or 'none'}")
 
-    print("\n―――――  Final summary  ―――――――\n")
-    print(generate_long_summary(events, signals))
-    print("\n――――――――――――――――――――\n")
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description="Journey summariser")
+    p.add_argument("--input", required=True,
+                   help="Path to .mp4 or folder of .jpg")
+    args = p.parse_args()
+    run_pipeline(args.input)
