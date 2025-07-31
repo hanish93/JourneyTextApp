@@ -5,7 +5,7 @@ import torch
 from ultralytics import YOLO
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1) FRAME WHITELIST & LABELS (for your five manually labelled key frames)
+# 1) FRAME WHITELIST & LABELS
 FRAME_WHITELIST = [7, 10, 77, 96, 116]
 FRAME_LABELS   = [
     "Tesco Express",
@@ -16,7 +16,7 @@ FRAME_LABELS   = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) FRAME EXTRACTION (1 fps) from video or folder of .jpg
+# 2) FRAME EXTRACTION
 def extract_frames(src, fps=1):
     if os.path.isdir(src):
         for fn in sorted(os.listdir(src)):
@@ -37,7 +37,7 @@ def extract_frames(src, fps=1):
     cap.release()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) MOTION CLASSIFICATION via optical flow
+# 3) OPTICAL‐FLOW EVENT DETECTION
 def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     if prev_gray is None:
         return "drive"
@@ -54,7 +54,7 @@ def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     return "drive"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) SIGNAL COLOR via YOLOv8 + simple HSV thresholding
+# 4) TRAFFIC‐LIGHT COLOUR DETECTION
 _yolo_sig = None
 def load_signal_model(device="cpu"):
     global _yolo_sig
@@ -71,7 +71,7 @@ def detect_signal_color(frame, yolo, conf=0.15):
             x1,y1,x2,y2 = map(int,b.xyxy[0].cpu().numpy())
             tbs.append((x1,y1,x2,y2))
     if tbs:
-        x1,y1,x2,y2 = max(tbs, key=lambda bb:(bb[2]-bb[0])*(bb[3]-bb[1]))
+        x1,y1,x2,y2 = max(tbs, key=lambda bb: (bb[2]-bb[0])*(bb[3]-bb[1]))
         crop = frame[y1:y2, x1:x2]
     else:
         h,w = frame.shape[:2]
@@ -89,16 +89,14 @@ def detect_signal_color(frame, yolo, conf=0.15):
     return "red" if rc>gc else "green"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5) DEBOUNCE repeated turns/signals
+# 5) DEBOUNCE
 def debounce_events(evts, window=3, min_count=3):
     out = evts.copy()
     n = len(evts)
     for i,e in enumerate(evts):
         if e in ("turn_left","turn_right"):
-            cnt = sum(
-                1 for j in range(max(0,i-window), min(n,i+window+1))
-                if evts[j]==e
-            )
+            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
+                      if evts[j]==e)
             if cnt < min_count:
                 out[i] = "drive"
     return out
@@ -108,67 +106,56 @@ def debounce_signals(sigs, window=3):
     n = len(sigs)
     for i,s in enumerate(sigs):
         if s in ("red","green"):
-            cnt = sum(
-                1 for j in range(max(0,i-window), min(n,i+window+1))
-                if sigs[j]==s
-            )
+            cnt = sum(1 for j in range(max(0,i-window), min(n,i+window+1))
+                      if sigs[j]==s)
             if cnt >= 2:
                 out[i] = s
     return out
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6) FINAL SUMMARY BUILDER
+# 6) SUMMARY GENERATOR (with custom wording)
 def generate_summary(events, signals):
     parts, last_sig = [], None
 
     for idx, (e,s) in enumerate(zip(events, signals), start=1):
-        # 1) initial red
-        if idx == 1 and s == "red":
+        if idx==1 and s=="red":
             parts.append("stopped at the red light")
             last_sig = "red"
             continue
-
-        # 2) green after red
-        if last_sig == "red" and s == "green":
+        if last_sig=="red" and s=="green":
             parts.append("once it turned green, I drove on")
             last_sig = "green"
 
-        # 3) landmark passes (custom wording)
         if e.startswith("passed "):
-            name = e.split(" ",1)[1]
-            if name in ("Tesco Express", "CREMA"):
+            label = e.split(" ",1)[1]
+            if label in ("Tesco Express","CREMA"):
                 parts.append("passed shops on the left")
-            elif name == "Townhall":
+            elif label=="Townhall":
                 parts.append("passed Townhall on the left")
-            elif name == "Vue":
+            elif label=="Vue":
                 parts.append("passed cinema on the left")
-            elif name == "Wool Pack Hub":
+            elif label=="Wool Pack Hub":
                 parts.append("passed pub on the left")
             else:
-                parts.append(f"passed {name}")
+                parts.append(f"passed {label}")
 
-        # 4) turns (already debounced)
-        if e == "turn_left":
+        if e=="turn_left":
             parts.append("turned left")
-        elif e == "turn_right":
+        elif e=="turn_right":
             parts.append("took a slight right")
 
-        # 5) new red (after something else)
-        if s == "red" and last_sig != "red":
+        if s=="red" and last_sig!="red":
             parts.append("then stopped at the red light")
-            last_sig = "red"
+            last_sig="red"
 
-    # begin with driving straight if not already stopped first
     if not parts or not parts[0].startswith("stopped"):
-        parts.insert(0, "drove straight")
+        parts.insert(0,"drove straight")
 
-    # dedupe consecutive duplicates
     clean = [parts[0]]
     for p in parts[1:]:
-        if p != clean[-1]:
+        if p!=clean[-1]:
             clean.append(p)
 
-    # build sentence
     sent = clean[0].capitalize()
     for p in clean[1:]:
         if p.startswith(("passed","turned","took")):
@@ -176,6 +163,5 @@ def generate_summary(events, signals):
         else:
             sent += ", " + p
 
-    # always end continuing straight
     sent = sent.rstrip('.') + " and continued straight."
     return sent
