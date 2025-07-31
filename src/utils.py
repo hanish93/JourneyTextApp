@@ -16,7 +16,7 @@ FRAME_LABELS   = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) FRAME EXTRACTION (1 fps) from video or folder of .jpg
+# 2) FRAME EXTRACTION (1 fps) from video or folder of .jpg
 def extract_frames(src, fps=1):
     if os.path.isdir(src):
         for fn in sorted(os.listdir(src)):
@@ -54,7 +54,7 @@ def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     return "drive"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) SIGNAL COLOR via YOLOv8 + simple HSV thresholding
+# 4) SIGNAL COLOR via YOLOv8 + HSV thresholding
 _yolo_sig = None
 def load_signal_model(device="cpu"):
     global _yolo_sig
@@ -91,18 +91,12 @@ def detect_signal_color(frame, yolo, conf=0.15):
 # ─────────────────────────────────────────────────────────────────────────────
 # 5) DEBOUNCE repeated turns/signals
 def debounce_events(evts, window=3, min_count=3):
-    """
-    Only keep a 'turn_left' or 'turn_right' if it appears in >= min_count frames
-    within a sliding window of +/- window frames around each index.
-    Otherwise force it back to 'drive'.
-    """
     out = evts.copy()
     n = len(evts)
     for i,e in enumerate(evts):
         if e in ("turn_left","turn_right"):
             cnt = sum(
-                1
-                for j in range(max(0, i-window), min(n, i+window+1))
+                1 for j in range(max(0, i-window), min(n, i+window+1))
                 if evts[j] == e
             )
             if cnt < min_count:
@@ -110,17 +104,12 @@ def debounce_events(evts, window=3, min_count=3):
     return out
 
 def debounce_signals(sigs, window=3):
-    """
-    Only keep a 'red' or 'green' if it appears in >=2 frames
-    within a sliding window; fewer detections are dropped.
-    """
     out = [None]*len(sigs)
     n = len(sigs)
     for i,s in enumerate(sigs):
         if s in ("red","green"):
             cnt = sum(
-                1
-                for j in range(max(0, i-window), min(n, i+window+1))
+                1 for j in range(max(0, i-window), min(n, i+window+1))
                 if sigs[j] == s
             )
             if cnt >= 2:
@@ -128,61 +117,62 @@ def debounce_signals(sigs, window=3):
     return out
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6) FINAL SUMMARY BUILDER
+# 6) FINAL SUMMARY BUILDER (with generic replacements)
+GENERIC_MAP = {
+    "Tesco Express": "shops on the left",
+    "CREMA":          "shops on the left",
+    "Townhall":       "Townhall",
+    "Vue":            "a cinema on the left",
+    "Wool Pack Hub":  "a pub on the left",
+}
+
 def generate_summary(events, signals):
     parts, last_sig = [], None
 
     for idx, (e,s) in enumerate(zip(events, signals), start=1):
-        # 1) initial red
         if idx == 1 and s == "red":
             parts.append("stopped at the red light")
             last_sig = "red"
             continue
 
-        # 2) green after red
         if last_sig == "red" and s == "green":
             parts.append("once it turned green, I drove on")
             last_sig = "green"
 
-        # 3) landmark passes
         if e.startswith("passed "):
-            name = e.split(" ",1)[1]
-            parts.append(f"passed {name}")
+            name    = e.split(" ",1)[1]
+            generic = GENERIC_MAP.get(name, name)
+            parts.append(f"passed {generic}")
 
-        # 4) turns (already debounced for >=3 frames)
         if e == "turn_left":
             parts.append("turned left")
         elif e == "turn_right":
             parts.append("took a slight right")
 
-        # 5) new red (after something else)
         if s == "red" and last_sig != "red":
             parts.append("then stopped at the red light")
             last_sig = "red"
 
-    # If nothing ever stopped us at start, mark that we began by driving straight
     if not parts or not parts[0].startswith("stopped"):
         parts.insert(0, "drove straight")
 
-    # Dedupe consecutive duplicates
+    # remove consecutive duplicates
     clean = [parts[0]]
     for p in parts[1:]:
         if p != clean[-1]:
             clean.append(p)
 
-    # Build the sentence
     sent = clean[0].capitalize()
     for p in clean[1:]:
-        # ensure “then” only where it makes sense:
-        if p.startswith("passed") or p.startswith("turned") or p.startswith("took"):
+        if p.startswith(("passed","turned","took")):
             sent += " and " + p
         else:
             sent += ", " + p
 
-    # Always end by continuing straight, if final action wasn’t “stopped at…”
-    if events and events[-1] in ("drive",) or any(ev.startswith("passed ") for ev in events[-1:]):
+    sent = sent.rstrip(".")
+    if events and (events[-1]=="drive" or events[-1].startswith("passed ")):
         sent += " and continued straight."
     else:
-        sent = sent.rstrip('.') + "."
+        sent += "."
 
     return sent
