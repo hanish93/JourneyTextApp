@@ -3,7 +3,7 @@ import cv2
 import torch
 from glob import glob
 
-from utils import (
+from .utils import (
     extract_frames,
     detect_event,
     load_signal_model,
@@ -29,11 +29,11 @@ def run_pipeline(src):
     else:
         frames = list(extract_frames(src))
 
-    # process each frame
+    # per‐frame processing
     for i, frame in enumerate(frames, start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # force-whitelist key frames
+        # force‐whitelist
         if i in FRAME_WHITELIST:
             lbl = FRAME_LABELS[FRAME_WHITELIST.index(i)]
             raw_ev.append(f"passed {lbl}")
@@ -41,12 +41,10 @@ def run_pipeline(src):
             prev_gray = gray
             continue
 
-        # motion/event
         ev = detect_event(prev_gray, gray)
         raw_ev.append(ev)
         prev_gray = gray
 
-        # signal color
         sig = detect_signal_color(frame, yolo)
         raw_sig.append(sig)
 
@@ -54,7 +52,7 @@ def run_pipeline(src):
     evs = debounce_events(raw_ev, window=3, min_count=3)
     sgs = debounce_signals(raw_sig, window=3)
 
-    # optional: print per-frame table
+    # optional per-frame table
     print("FRAME │ EVENT               │ SIGNAL")
     print("──────┼─────────────────────┼────────")
     for idx,(e,s) in enumerate(zip(evs, sgs), start=1):
@@ -66,9 +64,11 @@ def run_pipeline(src):
     print(generate_summary(evs, sgs))
     print("\n" + "─"*40 + "\n")
 
+
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="Create textual journey from a clip/folder")
-    p.add_argument("--input", "-i", required=True, help="video file or folder of frames")
+    p = argparse.ArgumentParser()
+    p.add_argument("--input", "-i", required=True,
+                   help="video file or folder of frames")
     args = p.parse_args()
     run_pipeline(args.input)
