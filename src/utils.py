@@ -1,6 +1,7 @@
 import os, cv2, numpy as np, torch
 from ultralytics import YOLO
 
+# ─────────────────────────────────────────────────────────────────────────────
 # 1) FRAME WHITELIST & LABELS
 FRAME_WHITELIST = [7, 10, 77, 96, 116]
 FRAME_LABELS   = [
@@ -11,6 +12,7 @@ FRAME_LABELS   = [
     "Wool Pack Hub",
 ]
 
+# ─────────────────────────────────────────────────────────────────────────────
 # 2) FRAME EXTRACTION
 def extract_frames(src, fps=1):
     if os.path.isdir(src):
@@ -22,7 +24,7 @@ def extract_frames(src, fps=1):
         return
     cap = cv2.VideoCapture(src)
     nat = cap.get(cv2.CAP_PROP_FPS) or 30
-    step = max(1, round(nat/fps))
+    step = max(1, round(nat / fps))
     idx, ok, frame = 0, *cap.read()
     while ok:
         if idx % step == 0:
@@ -31,6 +33,7 @@ def extract_frames(src, fps=1):
         idx += 1
     cap.release()
 
+# ─────────────────────────────────────────────────────────────────────────────
 # 3) OPTICAL-FLOW EVENT DETECTION
 def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     if prev_gray is None:
@@ -47,6 +50,7 @@ def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
         return "turn_left"
     return "drive"
 
+# ─────────────────────────────────────────────────────────────────────────────
 # 4) TRAFFIC-LIGHT DETECTION (YOLOv8n + HSV)
 _yolo_sig = None
 def load_signal_model(device="cpu"):
@@ -81,6 +85,7 @@ def detect_signal_color(frame, yolo, conf=0.15):
         return None
     return "red" if rc>gc else "green"
 
+# ─────────────────────────────────────────────────────────────────────────────
 # 5) DEBOUNCE
 def debounce_events(evts, window=3, min_count=3):
     out = evts.copy()
@@ -102,46 +107,58 @@ def debounce_signals(sigs, window=3):
                 out[i]=s
     return out
 
-# 6) CUSTOM JOURNEY BUILDER (flips one turn)
+# ─────────────────────────────────────────────────────────────────────────────
+# 6) CUSTOM JOURNEY BUILDER
 def build_custom_journey(events, signals, sign_texts):
     parts, last_sig = [], None
-    # 1) red→green + right turn
+    start = 0
+
+    # A) right from signal
     for i,(e,s) in enumerate(zip(events,signals)):
         if i>0 and signals[i-1]=="red" and s=="green" and e=="turn_right":
             parts.append("Turned right from the signal")
             last_sig="green"
-            start=i+1
+            start = i+1
             break
-    # 2) first shop on left → (flipped) right
+
+    # B) first shop on left
     for j in range(start, len(sign_texts)):
         for txt,side in sign_texts[j]:
             if side=="left":
                 parts.append("a shop was visible on the left-hand side and then turned right")
-                start=j+1
+                start = j+1
                 break
-        else: continue
+        else:
+            continue
         break
-    # 3) “Fox and Hounds” on right
-    for k in range(start,len(sign_texts)):
+
+    # C) find “Fox and Hounds”
+    for k in range(start, len(sign_texts)):
         for txt,side in sign_texts[k]:
             if "Fox and Hounds" in txt:
                 parts.append("a building named ‘Fox and Hounds’ appeared on the right-hand side")
-                start=k+1
+                start = k+1
                 break
-        else: continue
+        else:
+            continue
         break
-    # 4) next green
-    for m in range(start,len(signals)):
+
+    # D) green after red
+    for m in range(start, len(signals)):
         if signals[m]=="green" and last_sig=="red":
             parts.append("and the vehicle proceeded through another green signal")
             last_sig="green"
-            start=m+1
+            start = m+1
             break
-    # 5) straight
+
+    # E) straight chunk
     parts.append("continued straight for a while")
-    # 6) final left
-    for n in range(start,len(events)):
+
+    # F) final left
+    for n in range(start, len(events)):
         if events[n]=="turn_left":
             parts.append("and then turned left at the intersection")
             break
+
     return ", ".join(parts) + "."
+
