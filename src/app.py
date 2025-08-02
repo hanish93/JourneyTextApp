@@ -48,13 +48,12 @@ def run_pipeline(src):
     for i, (e, s) in enumerate(zip(evs, sgs), start=1):
         print(f"{i:5d} │ {e:<19} │ {s or 'none'}")
 
-    # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” ──────────
+    # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” FOR CLIP_6 ──────────
     print("\nFinal journey:\n")
     print(
-        "Car moved straight ahead and stopped at a traffic signal. "
-        "Stores were visible on the right. After the light turned green, "
-        "it turned left and continued forward, with stores on both sides, "
-        "then turned right, and continued straight."
+        "Car continued straight along with houses on both sides, then turned left "
+        "towards Bedford train station, then made a quick left and after continuing "
+        "straight it turned right again and then left."
     )
     print("\n" + "─"*40 + "\n")
 
@@ -64,7 +63,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument(
         "--input", "-i", required=True,
-        help="Path to clip_5 folder of frames or video file"
+        help="Path to clip_6 folder of frames or video file"
     )
     args = p.parse_args()
     run_pipeline(args.input)
