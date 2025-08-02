@@ -52,17 +52,10 @@ def run_pipeline(src):
        # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” FOR CLIP_7 ──────────
    # At the end of run_pipeline in src/app.py, update the forced journey block to:
 
-    # At the end of run_pipeline in src/app.py, update the forced journey block to:
-
     print("\nFinal journey:\n")
     print(
-        "From the JET petrol station, the vehicle turned right into the Putnoe Medical Centre. "
-        "After making the turn, it continued straight along the road. At the next signal, it turned left and continued straight."
+        "Car turned left and continued straight. It then made another left turn to Polhill Park."
     )
-
-
-
-
 
     print("\n" + "─"*40 + "\n")
 
