@@ -1,6 +1,7 @@
 import os
 import cv2
 import torch
+import argparse
 from glob import glob
 
 from .utils import (
@@ -11,35 +12,27 @@ from .utils import (
     debounce_events,
     debounce_signals,
     generate_summary,
-    FRAME_WHITELIST,
-    FRAME_LABELS,
 )
 
 def run_pipeline(src):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     yolo   = load_signal_model(device)
 
-    raw_ev, raw_sig = [], []
-    prev_gray = None
-
-    # load frames
+    frames = []
     if os.path.isdir(src):
-        paths  = sorted(glob(os.path.join(src, "*.jpg")))
-        frames = [cv2.imread(p) for p in paths]
+        for p in sorted(glob(os.path.join(src, "*.jpg"))):
+            img = cv2.imread(p)
+            if img is not None:
+                frames.append(img)
     else:
         frames = list(extract_frames(src))
 
-    # per‐frame processing
-    for i, frame in enumerate(frames, start=1):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    raw_ev, raw_sig = [], []
+    prev_gray = None
 
-        # force‐whitelist
-        if i in FRAME_WHITELIST:
-            lbl = FRAME_LABELS[FRAME_WHITELIST.index(i)]
-            raw_ev.append(f"passed {lbl}")
-            raw_sig.append(None)
-            prev_gray = gray
-            continue
+    # per-frame inference
+    for idx, frame in enumerate(frames, start=1):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         ev = detect_event(prev_gray, gray)
         raw_ev.append(ev)
@@ -48,27 +41,24 @@ def run_pipeline(src):
         sig = detect_signal_color(frame, yolo)
         raw_sig.append(sig)
 
-    # debounce
+    # debounce out noise
     evs = debounce_events(raw_ev, window=3, min_count=3)
-    sgs = debounce_signals(raw_sig, window=3)
+    sgs = debounce_signals(raw_sig, window=3, min_count=2)
 
-    # optional per-frame table
+    # print per-frame table
     print("FRAME │ EVENT               │ SIGNAL")
     print("──────┼─────────────────────┼────────")
-    for idx,(e,s) in enumerate(zip(evs, sgs), start=1):
-        mark = "⚑" if e.startswith("passed ") else " "
-        print(f"{idx:5d} │ {mark}{e:<19} │ {s or 'none'}")
+    for i,(e,s) in enumerate(zip(evs, sgs), start=1):
+        print(f"{i:5d} │ {e:<19} │ {s or 'none'}")
 
     # final summary
     print("\nFinal summary:\n")
     print(generate_summary(evs, sgs))
     print("\n" + "─"*40 + "\n")
 
-
-if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--input", "-i", required=True,
-                   help="video file or folder of frames")
-    args = p.parse_args()
+if __name__=="__main__":
+    p=argparse.ArgumentParser()
+    p.add_argument("--input","-i",required=True,
+                   help="path to video file or frames folder")
+    args=p.parse_args()
     run_pipeline(args.input)
