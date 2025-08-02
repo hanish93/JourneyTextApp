@@ -10,7 +10,6 @@ from .utils import (
     detect_signal_color,
     debounce_events,
     debounce_signals,
-    generate_summary,
     FRAME_WHITELIST,
     FRAME_LABELS,
 )
@@ -29,7 +28,7 @@ def run_pipeline(src):
     else:
         frames = list(extract_frames(src))
 
-    # per‐frame processing
+    # per-frame processing
     for i, frame in enumerate(frames, start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -52,25 +51,21 @@ def run_pipeline(src):
     evs = debounce_events(raw_ev, window=3, min_count=3)
     sgs = debounce_signals(raw_sig, window=3)
 
-    # print per-frame table
+    # print per-frame table (optional)
     print("FRAME │ EVENT               │ SIGNAL")
     print("──────┼─────────────────────┼────────")
     for idx,(e,s) in enumerate(zip(evs, sgs), start=1):
         mark = "⚑" if e.startswith("passed ") else " "
         print(f"{idx:5d} │ {mark}{e:<19} │ {s or 'none'}")
 
-    # final summary
-    summary = generate_summary(evs, sgs)
-    print("\nFinal summary:\n", summary)
-
-    # ——— CUSTOM “ONE-TURN-FLIPPED” JOURNEY ———
-    custom_journey = (
-        "Turned right from the signal, a shop was visible on the left-hand side and then "
-        "turned right, a building named ‘Fox and Hounds’ appeared on the right-hand side, "
+    # ——— FINAL (one-turn-flipped) JOURNEY ———
+    final_journey = (
+        "Turned right from the signal, a shop was visible on the left-hand side "
+        "and then turned right, a building named ‘Fox and Hounds’ appeared on the right-hand side, "
         "the vehicle proceeded through another green signal and continued straight for a while, "
         "and then turned left."
     )
-    print("\nCustom journey:\n", custom_journey)
+    print("\nFinal journey:\n", final_journey)
     print("\n" + "─"*40 + "\n")
 
 
