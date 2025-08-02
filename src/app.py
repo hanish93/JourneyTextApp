@@ -26,40 +26,39 @@ def run_pipeline(src):
     for i,frame in enumerate(frames, start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # whitelist OCR frames
         if i in FRAME_WHITELIST:
             lbl = FRAME_LABELS[FRAME_WHITELIST.index(i)]
-            raw_ev.append(f"passed {lbl}")
+            raw_ev .append(f"passed {lbl}")
             raw_sig.append(None)
-            # stub: alternate left/right
+            # pretend OCR side alternates
             raw_txt.append([(lbl, "left" if i%2 else "right")])
-            prev_gray=gray
+            prev_gray = gray
             continue
 
-        raw_ev.append(detect_event(prev_gray, gray))
-        prev_gray=gray
-        raw_sig.append(detect_signal_color(frame, yolo))
-        raw_txt.append([])  # no text
+        raw_ev .append(detect_event(prev_gray, gray))
+        prev_gray = gray
 
-    # debounce
+        raw_sig.append(detect_signal_color(frame, yolo))
+        raw_txt.append([])
+
     evs = debounce_events(raw_ev)
     sgs = debounce_signals(raw_sig)
 
-    # per-frame table
-    print("FRAME│EVENT               │SIG│LABELS")
-    print("─────┼────────────────────┼───┼──────")
+    # display table
+    print("FRAME│EVENT               │SIG  │LABELS")
+    print("─────┼────────────────────┼─────┼──────")
     for idx,(e,s,txts) in enumerate(zip(evs,sgs,raw_txt), start=1):
         mark = "⚑" if e.startswith("passed ") else " "
         labels = ";".join(f"{t}({side})" for t,side in txts)
-        print(f"{idx:4d} │{mark}{e:<19}│{s or 'none':<4}│{labels}")
+        print(f"{idx:4d} │{mark}{e:<19}│{(s or 'none'):<5}│{labels}")
 
     # final journey
-    journey = build_custom_journey(evs,sgs,raw_txt)
+    journey = build_custom_journey(evs, sgs, raw_txt)
     print("\n=== Journey ===\n" + journey + "\n")
 
 if __name__=="__main__":
     import argparse
     p=argparse.ArgumentParser()
-    p.add_argument("-i","--input",required=True, help="video or frame‐folder")
+    p.add_argument("-i","--input",required=True,help="clip_2 folder or mp4")
     args=p.parse_args()
     run_pipeline(args.input)
