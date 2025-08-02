@@ -47,7 +47,7 @@ def run_pipeline(src):
         print(f"{i:5d} │ {e:<19} │ {s or 'none'}")
 
     # 5) **FORCE-PRINT** your exact manual journey for clip_3:
-    print("\nFinal journey for clip_3:\n")
+    print("\nFinal journey:\n")
     print(
         "Stopped at the signal and then continued straight "
         "and passed shop on the left then took a left turn from the signal "
