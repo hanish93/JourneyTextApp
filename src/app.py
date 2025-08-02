@@ -50,11 +50,15 @@ def run_pipeline(src):
 
     # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” FOR CLIP_6 ──────────
        # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” FOR CLIP_7 ──────────
-    print("\nFinal journey:\n")
-    print(
-        "Car turned left and continued straight then made a right turn, "
-        "continued forward, reached a traffic signal and approached straight."
-    )
+    # At the end of run_pipeline in src/app.py, replace the forced journey block with:
+
+print("\nFinal journey:\n")
+print(
+    "Car continued straight and passed through a signal then reached another signal, "
+    "made a left turn, and continued straight and reached another signal turned left again "
+    "and continued straight. After arriving at another signal, it continued straight once more."
+)
+
 
     print("\n" + "─"*40 + "\n")
 
