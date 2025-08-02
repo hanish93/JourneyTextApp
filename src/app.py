@@ -1,60 +1,67 @@
-# JourneyTextApp/src/app.py
-
 import os, cv2, torch
 from glob import glob
-
-from src.utils import (
-    extract_frames,
-    load_light_model, detect_light_state,
-    load_turn_model, detect_turn,
-    load_ocr, detect_signs,
-    debounce_list, debounce_signals,
-    build_narrative,
+from utils import (
+    extract_frames, detect_event, load_signal_model, detect_signal_color,
+    debounce_events, debounce_signals, build_custom_journey,
+    FRAME_WHITELIST, FRAME_LABELS
 )
 
 def run_pipeline(src):
-    device      = "cuda" if torch.cuda.is_available() else "cpu"
-    light_model = load_light_model(device)
-    turn_model  = load_turn_model(device)
-    ocr_reader  = load_ocr()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    yolo   = load_signal_model(device)
 
-    raw_ev, raw_sig, raw_sg = [], [], []
+    raw_ev, raw_sig, raw_txt = [], [], []
     prev_gray = None
 
+    # load frames
     if os.path.isdir(src):
         paths  = sorted(glob(os.path.join(src, "*.jpg")))
         frames = [cv2.imread(p) for p in paths]
     else:
         frames = list(extract_frames(src))
 
-    for frame in frames:
+    # per‐frame
+    for i,frame in enumerate(frames, start=1):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # 1) turn
-        ev = detect_turn(prev_gray, gray)
+        # whitelist OCR frames
+        if i in FRAME_WHITELIST:
+            lbl = FRAME_LABELS[FRAME_WHITELIST.index(i)]
+            raw_ev.append(f"passed {lbl}")
+            raw_sig.append(None)
+            raw_txt.append([(lbl,"left" if i%2 else "right")])
+            prev_gray = gray
+            continue
+
+        ev = detect_event(prev_gray, gray)
         raw_ev.append(ev)
-        prev_gray = gray
+        prev_gray=gray
 
-        # 2) light
-        raw_sig.append(detect_light_state(frame, light_model))
+        sig = detect_signal_color(frame, yolo)
+        raw_sig.append(sig)
 
-        # 3) OCR
-        raw_sg.append(detect_signs(frame, ocr_reader))
+        # dummy OCR stub: replace with real OCR
+        raw_txt.append([])
 
-    evs = debounce_list(raw_ev, window=3, min_count=2)
-    sgs = debounce_signals(raw_sig, window=3)
+    # debounce
+    evs = debounce_events(raw_ev)
+    sgs = debounce_signals(raw_sig)
 
-    story = build_narrative(evs, sgs, raw_sg)
+    # print table
+    print("FRAME │ EVENT               │ SIGNAL │ LABELS")
+    print("──────┼─────────────────────┼────────┼──────────────")
+    for idx,(e,s,txts) in enumerate(zip(evs,sgs,raw_txt), start=1):
+        mark = "⚑" if e.startswith("passed ") else " "
+        labels = ";".join([f"{t}({side})" for t,side in txts])
+        print(f"{idx:5d} │ {mark}{e:<19} │ {s or 'none':<6} │ {labels}")
 
-    print("\n=== Journey Narrative ===\n")
-    print(story)
-    print("\n=========================\n")
-
+    # build & print final journey
+    journey = build_custom_journey(evs, sgs, raw_txt)
+    print("\n=== Journey ===\n" + journey + "\n")
 
 if __name__=="__main__":
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument("-i","--input", required=True,
-                   help="video or folder of frames")
+    p.add_argument("-i","--input",required=True, help="video or folder")
     args = p.parse_args()
     run_pipeline(args.input)
