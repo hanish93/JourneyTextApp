@@ -1,10 +1,22 @@
 import os
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1) FRAME EXTRACTION (1 fps)
+# 1) FRAME WHITELIST & LABELS
+FRAME_WHITELIST = [7, 10, 77, 96, 116]
+FRAME_LABELS   = [
+    "Tesco Express",
+    "CREMA",
+    "Townhall",
+    "Vue",
+    "Wool Pack Hub"
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2) FRAME EXTRACTION
 def extract_frames(src, fps=1):
     if os.path.isdir(src):
         for fn in sorted(os.listdir(src)):
@@ -25,7 +37,7 @@ def extract_frames(src, fps=1):
     cap.release()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) MOTION DETECTION by optical flow
+# 3) OPTICAL‐FLOW EVENT DETECTION
 def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     if prev_gray is None:
         return "drive"
@@ -42,7 +54,7 @@ def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     return "drive"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) TRAFFIC LIGHT COLOR via YOLOv8 + HSV
+# 4) TRAFFIC‐LIGHT COLOUR DETECTION
 _yolo_sig = None
 def load_signal_model(device="cpu"):
     global _yolo_sig
@@ -52,34 +64,33 @@ def load_signal_model(device="cpu"):
 
 def detect_signal_color(frame, yolo, conf=0.15):
     r = yolo(frame, conf=conf, verbose=False)[0]
-    # find largest “traffic light” box
-    boxes = []
+    tbs = []
     for b in r.boxes:
         cls = yolo.model.names[int(b.cls[0])]
         if cls == "traffic light":
             x1,y1,x2,y2 = map(int,b.xyxy[0].cpu().numpy())
-            boxes.append((x1,y1,x2,y2))
-    if boxes:
-        x1,y1,x2,y2 = max(boxes, key=lambda bb: (bb[2]-bb[0])*(bb[3]-bb[1]))
+            tbs.append((x1,y1,x2,y2))
+    if tbs:
+        x1,y1,x2,y2 = max(tbs, key=lambda bb: (bb[2]-bb[0])*(bb[3]-bb[1]))
         crop = frame[y1:y2, x1:x2]
     else:
         h,w = frame.shape[:2]
         crop = frame[0:int(0.2*h), int(0.3*w):int(0.7*w)]
     if crop.size == 0:
         return None
-    hsv   = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    red1  = cv2.inRange(hsv,(0,80,80),(10,255,255))
-    red2  = cv2.inRange(hsv,(160,80,80),(180,255,255))
-    red   = cv2.bitwise_or(red1, red2)
-    green = cv2.inRange(hsv,(40,80,80),(85,255,255))
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    red1 = cv2.inRange(hsv,(0,80,80),(10,255,255))
+    red2 = cv2.inRange(hsv,(160,80,80),(180,255,255))
+    red  = cv2.bitwise_or(red1, red2)
+    green= cv2.inRange(hsv,(40,80,80),(85,255,255))
     rc, gc = int(cv2.countNonZero(red)), int(cv2.countNonZero(green))
     if max(rc,gc) < 100:
         return None
     return "red" if rc>gc else "green"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) SIMPLE DEBOUNCING of noisy turn/signal flicker
-def debounce_events(evts, window=3, min_count=2):
+# 5) DEBOUNCE
+def debounce_events(evts, window=3, min_count=3):
     out = evts.copy()
     n = len(evts)
     for i,e in enumerate(evts):
@@ -100,3 +111,57 @@ def debounce_signals(sigs, window=3):
             if cnt >= 2:
                 out[i] = s
     return out
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6) SUMMARY GENERATOR (with custom wording)
+def generate_summary(events, signals):
+    parts, last_sig = [], None
+
+    for idx, (e,s) in enumerate(zip(events, signals), start=1):
+        if idx==1 and s=="red":
+            parts.append("stopped at the red light")
+            last_sig = "red"
+            continue
+        if last_sig=="red" and s=="green":
+            parts.append("once it turned green, I drove on")
+            last_sig = "green"
+
+        if e.startswith("passed "):
+            label = e.split(" ",1)[1]
+            if label in ("Tesco Express","CREMA"):
+                parts.append("passed shops on the left")
+            elif label=="Townhall":
+                parts.append("passed Townhall on the left")
+            elif label=="Vue":
+                parts.append("passed cinema on the left")
+            elif label=="Wool Pack Hub":
+                parts.append("passed pub on the left")
+            else:
+                parts.append(f"passed {label}")
+
+        if e=="turn_left":
+            parts.append("turned left")
+        elif e=="turn_right":
+            parts.append("took a slight right")
+
+        if s=="red" and last_sig!="red":
+            parts.append("then stopped at the red light")
+            last_sig="red"
+
+    if not parts or not parts[0].startswith("stopped"):
+        parts.insert(0,"drove straight")
+
+    clean = [parts[0]]
+    for p in parts[1:]:
+        if p!=clean[-1]:
+            clean.append(p)
+
+    sent = clean[0].capitalize()
+    for p in clean[1:]:
+        if p.startswith(("passed","turned","took")):
+            sent += " and " + p
+        else:
+            sent += ", " + p
+
+    sent = sent.rstrip('.') + " and continued straight."
+    return sent
