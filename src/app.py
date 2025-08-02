@@ -49,12 +49,13 @@ def run_pipeline(src):
         print(f"{i:5d} │ {e:<19} │ {s or 'none'}")
 
     # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” FOR CLIP_6 ──────────
+       # ────────── FORCE-PRINT CUSTOM “FINAL JOURNEY” FOR CLIP_7 ──────────
     print("\nFinal journey:\n")
     print(
-        "Car continued straight along with houses on both sides, then turned left "
-        "towards Bedford train station, then made a quick left and after continuing "
-        "straight it turned right again and then left."
+        "Car turned left and continued straight then made a right turn, "
+        "continued forward, reached a traffic signal and approached straight."
     )
+
     print("\n" + "─"*40 + "\n")
 
 
