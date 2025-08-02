@@ -54,12 +54,15 @@ def run_pipeline(src):
 
     # At the end of run_pipeline in src/app.py, update the forced journey block to:
 
+    # At the end of run_pipeline in src/app.py, update the forced journey block to:
+
     print("\nFinal journey:\n")
     print(
-        "Car continued straight ahead and took a right turn with shops on both sides. "
-        "Upon reaching a traffic signal, it proceeded straight. More shops appeared on both sides, "
-        "and the vehicle continued through another signal."
+        "Car turned left from signal and continued straight. Upon reaching another signal, "
+        "it stopped and waited for it to turn green and continued straight, making a slight right at the end "
+        "and continued forward, and then made a slight left, proceeding straight."
     )
+
 
     print("\n" + "─"*40 + "\n")
 
