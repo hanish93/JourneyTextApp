@@ -1,64 +1,61 @@
-import os
-import cv2
-import torch
-import argparse
+import os, cv2, torch
 from glob import glob
 
-from .utils import (
+from utils import (
     extract_frames,
-    detect_event,
-    load_signal_model,
-    detect_signal_color,
-    debounce_events,
-    debounce_signals,
-    generate_summary,
+    load_light_model, detect_light_state,
+    load_turn_model, detect_turn_sequence,
+    load_ocr, detect_signs,
+    debounce, debounce_signal,
+    build_narrative,
 )
 
 def run_pipeline(src):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    yolo   = load_signal_model(device)
+    light_model = load_light_model(device)
+    turn_model  = load_turn_model(device)
+    ocr_reader  = load_ocr()
 
-    frames = []
+    raw_ev, raw_sig, raw_sg = [], [], []
+    prev_gray=None
+
+    # load frames
     if os.path.isdir(src):
-        for p in sorted(glob(os.path.join(src, "*.jpg"))):
-            img = cv2.imread(p)
-            if img is not None:
-                frames.append(img)
+        paths  = sorted(glob(os.path.join(src, "*.jpg")))
+        frames = [cv2.imread(p) for p in paths]
     else:
         frames = list(extract_frames(src))
 
-    raw_ev, raw_sig = [], []
-    prev_gray = None
-
-    # per-frame inference
-    for idx, frame in enumerate(frames, start=1):
+    # per-frame
+    for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        ev = detect_event(prev_gray, gray)
-        raw_ev.append(ev)
-        prev_gray = gray
+        # 1) turn event
+        evt, prev_gray = detect_turn_sequence(prev_gray, gray, turn_model)
+        raw_ev.append(evt)
 
-        sig = detect_signal_color(frame, yolo)
-        raw_sig.append(sig)
+        # 2) traffic-light
+        raw_sig.append(detect_light_state(frame, light_model))
 
-    # debounce out noise
-    evs = debounce_events(raw_ev, window=3, min_count=3)
-    sgs = debounce_signals(raw_sig, window=3, min_count=2)
+        # 3) signboards
+        raw_sg.append(detect_signs(frame, ocr_reader))
 
-    # print per-frame table
-    print("FRAME │ EVENT               │ SIGNAL")
-    print("──────┼─────────────────────┼────────")
-    for i,(e,s) in enumerate(zip(evs, sgs), start=1):
-        print(f"{i:5d} │ {e:<19} │ {s or 'none'}")
+    # debounce
+    evs = debounce(raw_ev, window=3, min_count=2)
+    sgs = debounce_signal(raw_sig, window=3)
 
-    # final summary
-    print("\nFinal summary:\n")
-    print(generate_summary(evs, sgs))
-    print("\n" + "─"*40 + "\n")
+    # build narrative
+    story = build_narrative(evs, sgs, raw_sg)
+
+    print("\n=== Journey Narrative ===\n")
+    print(story)
+    print("\n=========================\n")
+
 
 if __name__=="__main__":
-    p=argparse.ArgumentParser()
-    p.add_argument("--input","-i",required=True,
-                   help="path to video file or frames folder")
-    args=p.parse_args()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("-i","--input", required=True,
+                   help="path to video file or folder of frames")
+    args = p.parse_args()
     run_pipeline(args.input)
