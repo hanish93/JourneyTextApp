@@ -54,10 +54,10 @@ def run_pipeline(src):
 
     print("\nFinal journey:\n")
     print(
-        "Car continued straight and passed through a traffic signal, and crossed the Fox and Hounds building. "
-        "After continuing further, it reached another signal when it turned green, took a right and continued straight. "
-        "At the next signal, it proceeded straight again."
+        "Car continued straight then turned left and continued straight and then reached a signal, "
+        "turned right, and passed the JET petrol station."
     )
+
 
 
 
