@@ -5,7 +5,7 @@ import numpy as np
 from ultralytics import YOLO
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1) FRAME EXTRACTION (1 fps) from video or folder of .jpg
+# 1) FRAME EXTRACTION (1 fps)
 def extract_frames(src, fps=1):
     if os.path.isdir(src):
         for fn in sorted(os.listdir(src)):
@@ -61,14 +61,12 @@ def detect_signal_color(frame, yolo, conf=0.15):
         if cls == "traffic light":
             x1,y1,x2,y2 = map(int, b.xyxy[0].cpu().numpy())
             boxes.append((x1,y1,x2,y2))
-
     if boxes:
         x1,y1,x2,y2 = max(boxes, key=lambda bb: (bb[2]-bb[0])*(bb[3]-bb[1]))
         crop = frame[y1:y2, x1:x2]
     else:
         h,w = frame.shape[:2]
         crop = frame[0:int(0.2*h), int(0.3*w):int(0.7*w)]
-
     if crop.size == 0:
         return None
     hsv   = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
