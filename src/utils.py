@@ -26,7 +26,7 @@ def extract_frames(src, fps=1):
     cap.release()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) OPTICAL-FLOW EVENT DETECTION
+# 2) OPTICAL‐FLOW EVENT DETECTION
 def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     if prev_gray is None:
         return "drive"
@@ -45,11 +45,12 @@ def detect_event(prev_gray, cur_gray, dx_thresh=1.5, stop_thresh=0.2):
     return "drive"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) TRAFFIC-LIGHT COLOR DETECTION via YOLOv8 + HSV
+# 3) TRAFFIC‐LIGHT COLOR DETECTION via YOLOv8 + HSV
 _yolo_sig = None
 def load_signal_model(device="cpu"):
     global _yolo_sig
     if _yolo_sig is None:
+        # adjust path if needed
         _yolo_sig = YOLO("yolov8n.pt").to(device).half()
     return _yolo_sig
 
@@ -80,7 +81,7 @@ def detect_signal_color(frame, yolo, conf=0.15):
     return "red" if rc>gc else "green"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) DEBOUNCE noisy turns & signals
+# 4) DEBOUNCE NOISY TURNS & SIGNALS
 def debounce_events(evts, window=3, min_count=3):
     out = evts.copy()
     n   = len(evts)
