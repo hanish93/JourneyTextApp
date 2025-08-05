@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-import sys
-import argparse
+import sys, argparse
 from tabulate import tabulate
 import sacrebleu
 from nltk.translate.meteor_score import single_meteor_score
@@ -25,11 +24,8 @@ def main():
     if len(refs) != len(hyps):
         sys.exit(f"❌ Mismatch lines: {len(refs)} refs vs {len(hyps)} hyps")
 
-    # Prepare metrics
     scorer = rouge_scorer.RougeScorer(['rouge1','rougeL'], use_stemmer=True)
     bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-
-    # Precompute BERTScore
     _, _, bert_f = bert_scorer.score(hyps, refs)
 
     rows = []
@@ -46,14 +42,14 @@ def main():
         meteor = single_meteor_score(r_tok, h_tok) * 100
 
         # chrF
-        chrf = sacrebleu.CHRF().score(h, [r])
+        chrf = sacrebleu.sentence_chrf(h, [r]).score
 
         # ROUGE-1 & ROUGE-L
         scores = scorer.score(r, h)
         r1 = scores['rouge1'].fmeasure * 100
         rL = scores['rougeL'].fmeasure * 100
 
-        # BERTScore
+        # BERTScore-F1
         bf1 = bert_f[i-1].item() * 100
 
         rows.append([
