@@ -13,10 +13,10 @@ bertscore = evaluate.load("bertscore")
 # -----------------------------
 # Load your files
 # -----------------------------
-with open("ground_truth.txt", "r", encoding="utf-8") as f:
+with open("Ground_Truth.txt", "r", encoding="utf-8") as f:
     references = [line.strip() for line in f.readlines()]
 
-with open("output.txt", "r", encoding="utf-8") as f:
+with open("Output.txt", "r", encoding="utf-8") as f:
     outputs = [line.strip() for line in f.readlines()]
 
 assert len(outputs) == len(references), "Mismatch in number of clips!"
