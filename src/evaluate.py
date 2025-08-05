@@ -1,61 +1,85 @@
-import evaluate
-import pandas as pd
+#!/usr/bin/env python3
+import sys, argparse
+from tabulate import tabulate
+import sacrebleu
+from nltk.translate.meteor_score import single_meteor_score
+from nltk.tokenize import word_tokenize
+from rouge_score import rouge_scorer
+from bert_score import BERTScorer
 
-# -----------------------------
-# Load evaluation metrics
-# -----------------------------
-bleu = evaluate.load("bleu")
-meteor = evaluate.load("meteor")
-chrf = evaluate.load("chrf")
-rouge = evaluate.load("rouge")
-bertscore = evaluate.load("bertscore")
+def load_nonempty_lines(path):
+    with open(path, encoding="utf8") as f:
+        return [l.rstrip() for l in f if l.strip()]
 
-# -----------------------------
-# Load your files
-# -----------------------------
-with open("Ground_Truth.txt", "r", encoding="utf-8") as f:
-    references = [line.strip() for line in f.readlines()]
+def main():
+    p = argparse.ArgumentParser(
+        description="Evaluate journeys vs. ground truth with multiple metrics"
+    )
+    p.add_argument("refs", help="Ground truth file (one journey per line)")
+    p.add_argument("hyps", help="Output    file (one journey per line)")
+    args = p.parse_args()
 
-with open("Output.txt", "r", encoding="utf-8") as f:
-    outputs = [line.strip() for line in f.readlines()]
+    refs = load_nonempty_lines(args.refs)
+    hyps = load_nonempty_lines(args.hyps)
 
-assert len(outputs) == len(references), "Mismatch in number of clips!"
+    if len(refs) != len(hyps):
+        print(f"⚠️  Warning: {len(refs)} references vs {len(hyps)} outputs; pairing up to {min(len(refs), len(hyps))}")
+    N = min(len(refs), len(hyps))
 
-# -----------------------------
-# Evaluate each clip
-# -----------------------------
-results = []
-for i, (pred, ref) in enumerate(zip(outputs, references), start=2):  # clips 2 → 14
-    clip_name = f"clip_{i}"
-    
-    # Compute metrics
-    bleu_score = bleu.compute(predictions=[pred], references=[[ref]])["bleu"] * 100
-    meteor_score = meteor.compute(predictions=[pred], references=[ref])["meteor"] * 100
-    chrf_score = chrf.compute(predictions=[pred], references=[ref])["score"]
-    rouge_score = rouge.compute(predictions=[pred], references=[ref])
-    bert_score = bertscore.compute(predictions=[pred], references=[ref], model_type="bert-base-uncased")
+    # Initialize scorers once
+    rouge = rouge_scorer.RougeScorer(["rouge1","rougeL"], use_stemmer=True)
+    bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
+    # We'll batch BERTScore on the trimmed lists
+    batch_refs = refs[:N]
+    batch_hyps = hyps[:N]
+    _, _, bert_f = bert_scorer.score(batch_hyps, batch_refs)
 
-    results.append({
-        "Clip": clip_name,
-        "BLEU": round(bleu_score, 2),
-        "METEOR": round(meteor_score, 2),
-        "chrF": round(chrf_score, 2),
-        "ROUGE-1": round(rouge_score["rouge1"] * 100, 2),
-        "ROUGE-L": round(rouge_score["rougeL"] * 100, 2),
-        "BERT-F1": round(sum(bert_score["f1"]) / len(bert_score["f1"]) * 100, 2)
-    })
+    rows = []
+    sums = {m:0.0 for m in ["BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"]}
 
-# -----------------------------
-# Convert to DataFrame
-# -----------------------------
-df = pd.DataFrame(results)
+    for i, (r, h) in enumerate(zip(batch_refs, batch_hyps), start=1):
+        # BLEU (sentence-level)
+        bleu = sacrebleu.sentence_bleu(h, [r]).score
 
-# Compute averages
-df.loc["AVERAGE"] = df.mean(numeric_only=True)
-df.loc["AVERAGE", "Clip"] = "AVERAGE"
+        # METEOR (nltk expects token lists)
+        r_tok = word_tokenize(r)
+        h_tok = word_tokenize(h)
+        meteor = single_meteor_score(r_tok, h_tok) * 100
 
-# Save / print table
-print(df.to_string(index=False))
+        # chrF
+        chrf = sacrebleu.sentence_chrf(h, [r]).score
 
-# Save to CSV for later use
-df.to_csv("evaluation_results.csv", index=False)
+        # ROUGE-1 & ROUGE-L (F1 * 100)
+        sc = rouge.score(r, h)
+        r1 = sc["rouge1"].fmeasure * 100
+        rL = sc["rougeL"].fmeasure * 100
+
+        # BERTScore-F1
+        bf1 = bert_f[i-1].item() * 100
+
+        # accumulate
+        for k,v in zip(sums.keys(), [bleu, meteor, chrf, r1, rL, bf1]):
+            sums[k] += v
+
+        rows.append([
+            f"clip_{i}",
+            f"{bleu:6.1f}",
+            f"{meteor:6.1f}",
+            f"{chrf:6.1f}",
+            f"{r1:6.1f}",
+            f"{rL:6.1f}",
+            f"{bf1:6.1f}",
+        ])
+
+    # add average row
+    avg = ["AVERAGE"] + [f"{(sums[k]/N):6.1f}" for k in sums]
+    rows.append(avg)
+
+    print(tabulate(
+        rows,
+        headers=["Clip","BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"],
+        tablefmt="github",
+    ))
+
+if __name__=="__main__":
+    main()
