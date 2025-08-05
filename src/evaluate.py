@@ -2,7 +2,8 @@
 
 import sys
 import argparse
-from sacrebleu.metrics import BLEU, CHRF, METEOR
+from sacrebleu.metrics import BLEU, CHRF
+from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer
 from bert_score import score as bert_score
 from tabulate import tabulate
@@ -28,46 +29,45 @@ def main():
     bleu = BLEU()
     bleu_score = bleu.corpus_score(hyps, [refs]).score
 
-    # METEOR
-    meteor = METEOR()
-    meteor_score = meteor.corpus_score(hyps, [refs]).score
-
     # chrF
     chrf = CHRF()
     chrf_score = chrf.corpus_score(hyps, [refs]).score
 
-    # ROUGE
-    scorer = rouge_scorer.RougeScorer(["rouge1","rougeL"], use_stemmer=True)
-    agg1 = {"p":0,"r":0,"f":0}
-    aggL = {"p":0,"r":0,"f":0}
-    for ref, hyp in zip(refs, hyps):
-        sc = scorer.score(ref, hyp)
-        agg1["p"] += sc["rouge1"].precision
-        agg1["r"] += sc["rouge1"].recall
-        agg1["f"] += sc["rouge1"].fmeasure
-        aggL["p"] += sc["rougeL"].precision
-        aggL["r"] += sc["rougeL"].recall
-        aggL["f"] += sc["rougeL"].fmeasure
-    n = len(refs)
-    for m in agg1: agg1[m] = 100 * agg1[m] / n
-    for m in aggL: aggL[m] = 100 * aggL[m] / n
+    # METEOR (average over sentences)
+    meteor_scores = [meteor_score([r], h) for r, h in zip(refs, hyps)]
+    meteor_score_avg = 100 * sum(meteor_scores) / len(meteor_scores)
 
-    # BERTScore
+    # ROUGE-1 & ROUGE-L
+    scorer = rouge_scorer.RougeScorer(["rouge1","rougeL"], use_stemmer=True)
+    agg = {"rouge1": {"p":0,"r":0,"f":0},
+           "rougeL": {"p":0,"r":0,"f":0}}
+    for ref, hyp in zip(refs, hyps):
+        scores = scorer.score(ref, hyp)
+        for key in agg:
+            agg[key]["p"] += scores[key].precision
+            agg[key]["r"] += scores[key].recall
+            agg[key]["f"] += scores[key].fmeasure
+    n = len(refs)
+    for key in agg:
+        for m in agg[key]:
+            agg[key][m] = 100 * agg[key][m] / n
+
+    # BERTScore-F1
     P, R, F1 = bert_score(hyps, refs, lang="en", rescale_with_baseline=True)
     bert_f1 = 100 * F1.mean().item()
 
-    # display
+    # Tabulate results
     table = [
-        ["BLEU",        f"{bleu_score:.1f}"],
-        ["METEOR",      f"{meteor_score:.1f}"],
-        ["chrF",        f"{chrf_score:.1f}"],
-        ["ROUGE-1 P",   f"{agg1['p']:.1f}"],
-        ["ROUGE-1 R",   f"{agg1['r']:.1f}"],
-        ["ROUGE-1 F1",  f"{agg1['f']:.1f}"],
-        ["ROUGE-L P",   f"{aggL['p']:.1f}"],
-        ["ROUGE-L R",   f"{aggL['r']:.1f}"],
-        ["ROUGE-L F1",  f"{aggL['f']:.1f}"],
-        ["BERTScore-F1",f"{bert_f1:.1f}"],
+        ["BLEU",         f"{bleu_score:.1f}"],
+        ["METEOR",       f"{meteor_score_avg:.1f}"],
+        ["chrF",         f"{chrf_score:.1f}"],
+        ["ROUGE-1 P",    f"{agg['rouge1']['p']:.1f}"],
+        ["ROUGE-1 R",    f"{agg['rouge1']['r']:.1f}"],
+        ["ROUGE-1 F1",   f"{agg['rouge1']['f']:.1f}"],
+        ["ROUGE-L P",    f"{agg['rougeL']['p']:.1f}"],
+        ["ROUGE-L R",    f"{agg['rougeL']['r']:.1f}"],
+        ["ROUGE-L F1",   f"{agg['rougeL']['f']:.1f}"],
+        ["BERTScore-F1", f"{bert_f1:.1f}"],
     ]
     print("\n" + tabulate(table, headers=["Metric","Score"], tablefmt="github") + "\n")
 
