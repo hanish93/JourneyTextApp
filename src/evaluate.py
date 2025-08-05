@@ -1,77 +1,61 @@
-#!/usr/bin/env python3
-import sys, argparse
-from tabulate import tabulate
-import sacrebleu
-from nltk.translate.meteor_score import single_meteor_score
-from nltk.tokenize import word_tokenize
-from rouge_score import rouge_scorer
-from bert_score import BERTScorer
+import evaluate
+import pandas as pd
 
-def load_lines(path):
-    with open(path, encoding='utf8') as f:
-        return [l.strip() for l in f if l.strip()]
+# -----------------------------
+# Load evaluation metrics
+# -----------------------------
+bleu = evaluate.load("bleu")
+meteor = evaluate.load("meteor")
+chrf = evaluate.load("chrf")
+rouge = evaluate.load("rouge")
+bertscore = evaluate.load("bertscore")
 
-def main():
-    p = argparse.ArgumentParser(
-        description="Evaluate summarization: BLEU, METEOR, chrF, ROUGE-1/ROUGE-L, BERTScore"
-    )
-    p.add_argument("refs", help="Ground truth file (one line per clip)")
-    p.add_argument("hyps", help="Output file    (one line per clip)")
-    args = p.parse_args()
+# -----------------------------
+# Load your files
+# -----------------------------
+with open("ground_truth.txt", "r", encoding="utf-8") as f:
+    references = [line.strip() for line in f.readlines()]
 
-    refs = load_lines(args.refs)
-    hyps = load_lines(args.hyps)
-    if len(refs) != len(hyps):
-        sys.exit(f"❌ Mismatch lines: {len(refs)} refs vs {len(hyps)} hyps")
+with open("output.txt", "r", encoding="utf-8") as f:
+    outputs = [line.strip() for line in f.readlines()]
 
-    scorer = rouge_scorer.RougeScorer(['rouge1','rougeL'], use_stemmer=True)
-    bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-    _, _, bert_f = bert_scorer.score(hyps, refs)
+assert len(outputs) == len(references), "Mismatch in number of clips!"
 
-    rows = []
-    sums = {k:0.0 for k in ["BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"]}
-    P = len(refs)
+# -----------------------------
+# Evaluate each clip
+# -----------------------------
+results = []
+for i, (pred, ref) in enumerate(zip(outputs, references), start=2):  # clips 2 → 14
+    clip_name = f"clip_{i}"
+    
+    # Compute metrics
+    bleu_score = bleu.compute(predictions=[pred], references=[[ref]])["bleu"] * 100
+    meteor_score = meteor.compute(predictions=[pred], references=[ref])["meteor"] * 100
+    chrf_score = chrf.compute(predictions=[pred], references=[ref])["score"]
+    rouge_score = rouge.compute(predictions=[pred], references=[ref])
+    bert_score = bertscore.compute(predictions=[pred], references=[ref], model_type="bert-base-uncased")
 
-    for i,(r,h) in enumerate(zip(refs,hyps), start=1):
-        # BLEU
-        bleu = sacrebleu.sentence_bleu(h, [r]).score
+    results.append({
+        "Clip": clip_name,
+        "BLEU": round(bleu_score, 2),
+        "METEOR": round(meteor_score, 2),
+        "chrF": round(chrf_score, 2),
+        "ROUGE-1": round(rouge_score["rouge1"] * 100, 2),
+        "ROUGE-L": round(rouge_score["rougeL"] * 100, 2),
+        "BERT-F1": round(sum(bert_score["f1"]) / len(bert_score["f1"]) * 100, 2)
+    })
 
-        # METEOR (tokenized)
-        r_tok = word_tokenize(r)
-        h_tok = word_tokenize(h)
-        meteor = single_meteor_score(r_tok, h_tok) * 100
+# -----------------------------
+# Convert to DataFrame
+# -----------------------------
+df = pd.DataFrame(results)
 
-        # chrF
-        chrf = sacrebleu.sentence_chrf(h, [r]).score
+# Compute averages
+df.loc["AVERAGE"] = df.mean(numeric_only=True)
+df.loc["AVERAGE", "Clip"] = "AVERAGE"
 
-        # ROUGE-1 & ROUGE-L
-        scores = scorer.score(r, h)
-        r1 = scores['rouge1'].fmeasure * 100
-        rL = scores['rougeL'].fmeasure * 100
+# Save / print table
+print(df.to_string(index=False))
 
-        # BERTScore-F1
-        bf1 = bert_f[i-1].item() * 100
-
-        rows.append([
-            f"clip_{i}",
-            f"{bleu:5.1f}",
-            f"{meteor:6.1f}",
-            f"{chrf:5.1f}",
-            f"{r1:6.1f}",
-            f"{rL:6.1f}",
-            f"{bf1:6.1f}",
-        ])
-        for k,v in zip(sums.keys(), [bleu,meteor,chrf,r1,rL,bf1]):
-            sums[k] += v
-
-    avg = ["AVERAGE"] + [f"{(sums[k]/P):6.1f}" for k in sums]
-    rows.append(avg)
-
-    print(tabulate(
-        rows,
-        headers=["Clip","BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"],
-        tablefmt="github"
-    ))
-
-if __name__=="__main__":
-    main()
+# Save to CSV for later use
+df.to_csv("evaluation_results.csv", index=False)
