@@ -1,48 +1,69 @@
-# evaluate_journeys.py
+# src/evaluate.py
+
 import sys
-import re
+import argparse
 from sacrebleu import sentence_bleu
+from rouge_score import rouge_scorer
 from tabulate import tabulate
 
-def parse_file(path):
-    """
-    Expects sections like:
-      Clip 2
-      The vehicle turned right ...
-    
-    Returns dict: { '2': "The vehicle turned right ...", ... }
-    """
-    clips = {}
-    lines = [l.strip() for l in open(path, encoding="utf-8") if l.strip()]
-    i = 0
-    while i < len(lines):
-        m = re.match(r'Clip\s+(\d+)', lines[i])
-        if m:
-            clip_id = m.group(1)
-            # next non-blank line is the text
-            if i+1 < len(lines):
-                clips[clip_id] = lines[i+1]
-            i += 2
-        else:
-            i += 1
-    return clips
+def load_lines(path):
+    with open(path, encoding="utf8") as f:
+        # strip out empty lines, keep order
+        return [l.strip() for l in f.readlines() if l.strip()]
 
-def main(gt_path, out_path):
-    gt = parse_file(gt_path)
-    out = parse_file(out_path)
-    rows = []
-    for clip_id in sorted(gt, key=lambda x: int(x)):
-        ref = gt[clip_id]
-        hyp = out.get(clip_id, "")
-        # sacrebleu expects list of references, each being a list of sentences
-        bleu = sentence_bleu(hyp, [ref], smooth_method="exp").score
-        rows.append([clip_id, f"{bleu:.2f}", ref, hyp])
-    print(tabulate(rows,
-                   headers=["Clip", "BLEU", "Reference", "Prediction"],
-                   tablefmt="github"))
+def main():
+    p = argparse.ArgumentParser(
+        description="Compare Ground_Truth.txt vs. Output.txt and report BLEU/ROUGE scores"
+    )
+    p.add_argument("ground_truth", help="Path to Ground_Truth.txt")
+    p.add_argument("output",       help="Path to Output.txt")
+    args = p.parse_args()
+
+    refs = load_lines(args.ground_truth)
+    hyps = load_lines(args.output)
+
+    if len(refs) != len(hyps):
+        print(f"[!] mismatch: {len(refs)} refs vs. {len(hyps)} outputs", file=sys.stderr)
+        sys.exit(1)
+
+    scorer = rouge_scorer.RougeScorer(["rouge1","rougeL"], use_stemmer=True)
+
+    table = []
+    totals = {"bleu":0.0, "rouge1":0.0, "rougeL":0.0}
+    n = len(refs)
+
+    for idx, (ref, hyp) in enumerate(zip(refs, hyps), start=2):
+        # sentence-level BLEU
+        bleu = sentence_bleu(hyp, [ref]).score
+        # rouge
+        scores = scorer.score(ref, hyp)
+        r1 = scores["rouge1"].fmeasure * 100
+        rL = scores["rougeL"].fmeasure * 100
+
+        totals["bleu"]   += bleu
+        totals["rouge1"] += r1
+        totals["rougeL"] += rL
+
+        table.append((
+            f"clip_{idx}",
+            f"{bleu:5.1f}",
+            f"{r1:5.1f}",
+            f"{rL:5.1f}",
+        ))
+
+    # add averages row
+    table.append((
+        "AVERAGE",
+        f"{totals['bleu']/n:5.1f}",
+        f"{totals['rouge1']/n:5.1f}",
+        f"{totals['rougeL']/n:5.1f}"
+    ))
+
+    print(tabulate(
+        table,
+        headers=["Clip","BLEU","ROUGE-1","ROUGE-L"],
+        tablefmt="github"
+    ))
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python evaluate_journeys.py Ground_Truth.txt Output.txt")
-        sys.exit(1)
-    main(sys.argv[1], sys.argv[2])
+    main()
