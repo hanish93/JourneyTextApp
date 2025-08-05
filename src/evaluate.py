@@ -4,6 +4,7 @@ import argparse
 from tabulate import tabulate
 import sacrebleu
 from nltk.translate.meteor_score import single_meteor_score
+from nltk.tokenize import word_tokenize
 from rouge_score import rouge_scorer
 from bert_score import BERTScorer
 
@@ -25,38 +26,34 @@ def main():
         sys.exit(f"❌ Mismatch lines: {len(refs)} refs vs {len(hyps)} hyps")
 
     # Prepare metrics
-    # 1) BLEU (sentence-level, sacrebleu)
-    # 2) METEOR (NLTK)
-    # 3) chrF (sacrebleu)
-    # 4) ROUGE-1 & ROUGE-L (rouge-score)
     scorer = rouge_scorer.RougeScorer(['rouge1','rougeL'], use_stemmer=True)
-    # 5) BERTScore
     bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
 
-    # Precompute BERTScore for all at once
-    P = len(refs)
-    P_scores = bert_scorer.score(hyps, refs)
-    _, _, bert_f = P_scores
+    # Precompute BERTScore
+    _, _, bert_f = bert_scorer.score(hyps, refs)
 
     rows = []
     sums = {k:0.0 for k in ["BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"]}
+    P = len(refs)
 
     for i,(r,h) in enumerate(zip(refs,hyps), start=1):
-        # BLEU (1-4 gram, smoothing default)
+        # BLEU
         bleu = sacrebleu.sentence_bleu(h, [r]).score
 
-        # METEOR
-        meteor = single_meteor_score(r, h) * 100
+        # METEOR (tokenized)
+        r_tok = word_tokenize(r)
+        h_tok = word_tokenize(h)
+        meteor = single_meteor_score(r_tok, h_tok) * 100
 
         # chrF
         chrf = sacrebleu.CHRF().score(h, [r])
 
-        # ROUGE-1 & ROUGE-L F1
+        # ROUGE-1 & ROUGE-L
         scores = scorer.score(r, h)
         r1 = scores['rouge1'].fmeasure * 100
         rL = scores['rougeL'].fmeasure * 100
 
-        # BERTScore F1
+        # BERTScore
         bf1 = bert_f[i-1].item() * 100
 
         rows.append([
@@ -71,7 +68,6 @@ def main():
         for k,v in zip(sums.keys(), [bleu,meteor,chrf,r1,rL,bf1]):
             sums[k] += v
 
-    # average row
     avg = ["AVERAGE"] + [f"{(sums[k]/P):6.1f}" for k in sums]
     rows.append(avg)
 
@@ -80,7 +76,6 @@ def main():
         headers=["Clip","BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"],
         tablefmt="github"
     ))
-
 
 if __name__=="__main__":
     main()
