@@ -10,6 +10,7 @@ from bert_score import score as bert_score
 from nltk.translate.meteor_score import single_meteor_score
 from tabulate import tabulate
 
+# download once
 nltk.download("wordnet", quiet=True)
 nltk.download("punkt", quiet=True)
 nltk.download("omw-1.4", quiet=True)
@@ -17,17 +18,13 @@ nltk.download("omw-1.4", quiet=True)
 
 def read_clips(path: Path):
     """
-    Reads a file with blocks:
+    Read blocks of the form:
       Clip N
       <some text>
-
-      Clip M
-      <some text>
-    Returns dict[clip_name] = text
+    Returns dict mapping "Clip N" → text.
     """
     text = path.read_text(encoding="utf-8")
     parts = re.split(r"^(Clip\s+\d+)\s*$", text, flags=re.MULTILINE)
-    # parts = ["", "Clip 2", "ref text", "Clip 3", "ref text", ...]
     clips = {}
     for i in range(1, len(parts), 2):
         name = parts[i].strip()
@@ -45,14 +42,18 @@ def main():
     refs = read_clips(ref_file)
     hyps = read_clips(out_file)
 
-    assert set(refs) == set(hyps), "Mismatch in clip names between reference and output!"
+    if set(refs) != set(hyps):
+        missing = set(refs) ^ set(hyps)
+        print("Mismatch in clips:", missing)
+        sys.exit(1)
 
-    # initialize scorers
+    # scorers
     bleu_scorer = sacrebleu.metrics.BLEU()
     chrf_scorer = sacrebleu.metrics.CHRF()
     rouge_s = rouge_scorer.RougeScorer(["rouge1", "rougeL"], use_stemmer=True)
 
-    table = []
+    rows = []
+    # sort by clip number
     for clip in sorted(refs.keys(), key=lambda c: int(re.search(r"\d+", c).group())):
         ref = refs[clip]
         hyp = hyps[clip]
@@ -63,38 +64,38 @@ def main():
         # chrF
         chrf = chrf_scorer.corpus_score([hyp], [[ref]]).score
 
-        # ROUGE-1 & ROUGE-L F1
-        scores = rouge_s.score(ref, hyp)
-        r1_f = scores["rouge1"].fmeasure * 100
-        rl_f = scores["rougeL"].fmeasure * 100
+        # ROUGE
+        sc = rouge_s.score(ref, hyp)
+        r1 = sc["rouge1"].fmeasure * 100
+        rl = sc["rougeL"].fmeasure * 100
 
-        # METEOR
-        meteor = single_meteor_score(ref, hyp) * 100
+        # METEOR (requires token lists)
+        meteor = single_meteor_score(ref.split(), hyp.split()) * 100
 
-        # BERTScore F1
+        # BERTScore
         P, R, F1 = bert_score([hyp], [ref], lang="en", rescale_with_baseline=True)
         bert_f = F1[0].item() * 100
 
-        table.append([
+        rows.append([
             clip,
             f"{bleu:5.1f}",
             f"{meteor:5.1f}",
             f"{chrf:5.1f}",
-            f"{r1_f:6.1f}",
-            f"{rl_f:6.1f}",
+            f"{r1:6.1f}",
+            f"{rl:6.1f}",
             f"{bert_f:5.1f}"
         ])
 
-    # average row
-    cols = list(zip(*table))
+    # compute averages
+    cols = list(zip(*rows))
     avg = ["AVERAGE"] + [
         f"{sum(float(x) for x in col)/len(col):5.1f}"
         for col in cols[1:]
     ]
-    table.append(avg)
+    rows.append(avg)
 
     print(tabulate(
-        table,
+        rows,
         headers=["Clip", "BLEU", "METEOR", "chrF", "ROUGE-1", "ROUGE-L", "BERT-F1"],
         tablefmt="github"
     ))
