@@ -1,85 +1,90 @@
-#!/usr/bin/env python3
-import sys, argparse
+import re, sys
+from pathlib import Path
 from tabulate import tabulate
-import sacrebleu
-from nltk.translate.meteor_score import single_meteor_score
-from nltk.tokenize import word_tokenize
-from rouge_score import rouge_scorer
-from bert_score import BERTScorer
+import evaluate
 
-def load_nonempty_lines(path):
-    with open(path, encoding="utf8") as f:
-        return [l.rstrip() for l in f if l.strip()]
+CLIP_RE = re.compile(r"^Clip\s+(\d+)", re.IGNORECASE)
+
+def load_journeys(path: Path):
+    """
+    Parse a file containing lines like:
+      Clip 2
+      Journey text...
+      Clip 3
+      Another journey...
+    Returns a dict: { "clip_2": "Journey text...", ... }
+    """
+    lines = path.read_text().splitlines()
+    out, current = {}, None
+    for l in lines:
+        m = CLIP_RE.match(l)
+        if m:
+            current = f"clip_{m.group(1)}"
+            out[current] = ""
+        elif current and l.strip():
+            # first non-empty line after the header is the journey
+            if not out[current]:
+                out[current] = l.strip()
+    return out
 
 def main():
-    p = argparse.ArgumentParser(
-        description="Evaluate journeys vs. ground truth with multiple metrics"
-    )
-    p.add_argument("refs", help="Ground truth file (one journey per line)")
-    p.add_argument("hyps", help="Output    file (one journey per line)")
-    args = p.parse_args()
+    if len(sys.argv) != 3:
+        print("Usage: python -m src.evaluate Ground_Truth.txt Output.txt")
+        sys.exit(1)
 
-    refs = load_nonempty_lines(args.refs)
-    hyps = load_nonempty_lines(args.hyps)
+    gt  = load_journeys(Path(sys.argv[1]))
+    pred = load_journeys(Path(sys.argv[2]))
+    clips = sorted(set(gt) & set(pred))
+    if not clips:
+        print("ℹ️  No overlapping clips found.")
+        sys.exit(0)
 
-    if len(refs) != len(hyps):
-        print(f"⚠️  Warning: {len(refs)} references vs {len(hyps)} outputs; pairing up to {min(len(refs), len(hyps))}")
-    N = min(len(refs), len(hyps))
-
-    # Initialize scorers once
-    rouge = rouge_scorer.RougeScorer(["rouge1","rougeL"], use_stemmer=True)
-    bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-    # We'll batch BERTScore on the trimmed lists
-    batch_refs = refs[:N]
-    batch_hyps = hyps[:N]
-    _, _, bert_f = bert_scorer.score(batch_hyps, batch_refs)
+    # load metrics
+    bleu   = evaluate.load("bleu")
+    meteor = evaluate.load("meteor")
+    chrf   = evaluate.load("chrf")
+    rouge  = evaluate.load("rouge")
+    bert   = evaluate.load("bertscore")
 
     rows = []
-    sums = {m:0.0 for m in ["BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"]}
+    agg = {m: [] for m in ["BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"]}
 
-    for i, (r, h) in enumerate(zip(batch_refs, batch_hyps), start=1):
-        # BLEU (sentence-level)
-        bleu = sacrebleu.sentence_bleu(h, [r]).score
+    for clip in clips:
+        ref = gt[clip]
+        hyp = pred[clip]
 
-        # METEOR (nltk expects token lists)
-        r_tok = word_tokenize(r)
-        h_tok = word_tokenize(h)
-        meteor = single_meteor_score(r_tok, h_tok) * 100
+        b = bleu.compute(predictions=[hyp], references=[[ref]])["bleu"] * 100
+        m = meteor.compute(predictions=[hyp], references=[[ref]])["meteor"] * 100
+        c = chrf.compute(predictions=[hyp], references=[[ref]])["score"] * 100
 
-        # chrF
-        chrf = sacrebleu.sentence_chrf(h, [r]).score
+        r = rouge.compute(
+            predictions=[hyp], references=[ref],
+            rouge_types=["rouge1","rougeL"], use_aggregator="avg"
+        )
+        r1 = r["rouge1"].mid.fmeasure * 100
+        rl = r["rougeL"].mid.fmeasure * 100
 
-        # ROUGE-1 & ROUGE-L (F1 * 100)
-        sc = rouge.score(r, h)
-        r1 = sc["rouge1"].fmeasure * 100
-        rL = sc["rougeL"].fmeasure * 100
-
-        # BERTScore-F1
-        bf1 = bert_f[i-1].item() * 100
-
-        # accumulate
-        for k,v in zip(sums.keys(), [bleu, meteor, chrf, r1, rL, bf1]):
-            sums[k] += v
+        br = bert.compute(predictions=[hyp], references=[ref], lang="en")
+        bf = br["f1"][0] * 100
 
         rows.append([
-            f"clip_{i}",
-            f"{bleu:6.1f}",
-            f"{meteor:6.1f}",
-            f"{chrf:6.1f}",
-            f"{r1:6.1f}",
-            f"{rL:6.1f}",
-            f"{bf1:6.1f}",
+            clip, f"{b:5.1f}", f"{m:5.1f}", f"{c:5.1f}",
+            f"{r1:5.1f}", f"{rl:5.1f}", f"{bf:5.1f}"
         ])
 
-    # add average row
-    avg = ["AVERAGE"] + [f"{(sums[k]/N):6.1f}" for k in sums]
+        for k,v in zip(agg.keys(), [b,m,c,r1,rl,bf]):
+            agg[k].append(v)
+
+    # AVERAGE row
+    avg = ["AVERAGE"] + [f"{sum(agg[k])/len(agg[k]):5.1f}" for k in agg]
     rows.append(avg)
 
     print(tabulate(
         rows,
         headers=["Clip","BLEU","METEOR","chrF","ROUGE-1","ROUGE-L","BERT-F1"],
         tablefmt="github",
+        stralign="center"
     ))
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
