@@ -1,103 +1,88 @@
-# src/evaluate.py
 import sys
+import re
 from pathlib import Path
-import evaluate
+
+import sacrebleu
 from bert_score import BERTScorer
 from tabulate import tabulate
 
-def load_file(path):
+def load_clips(path):
     """
-    Expects lines like:
+    Read a file with lines like:
       Clip 2
-      The ... journey...
+      The … text
       Clip 3
-      Another journey...
-    Returns dict: { "Clip 2": text, "Clip 3": text, ... }
+      Another text
+    Returns: dict { "Clip 2": "The … text", … }
     """
-    lines = [l.strip() for l in Path(path).read_text().splitlines() if l.strip()]
-    data = {}
-    key = None
-    for line in lines:
-        if line.lower().startswith("clip"):
-            key = line
-            data[key] = []
+    text = Path(path).read_text().splitlines()
+    clips = {}
+    key, buf = None, []
+    for ln in text:
+        ln = ln.strip()
+        if not ln:
+            continue
+        if re.match(r"^Clip\s+\d+", ln):
+            if key:
+                clips[key] = " ".join(buf).strip()
+            key = ln
+            buf = []
         elif key:
-            data[key].append(line)
-    return {k: " ".join(v) for k, v in data.items()}
+            buf.append(ln)
+    if key:
+        clips[key] = " ".join(buf).strip()
+    return clips
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python3 -m src.evaluate GROUND_TRUTH.txt OUTPUT.txt")
+        print("Usage: python3 -m src.evaluate Ground_Truth.txt Output.txt")
         sys.exit(1)
 
-    gt_path, out_path = sys.argv[1], sys.argv[2]
-    refs = load_file(gt_path)
-    hyps = load_file(out_path)
+    refs = load_clips(sys.argv[1])
+    hyps = load_clips(sys.argv[2])
+    clips = sorted(refs.keys(), key=lambda x: int(x.split()[1]))
+    assert set(clips) == set(hyps.keys()), "Mismatch in clip IDs!"
 
-    clips = sorted(refs.keys())
-    assert set(clips) == set(hyps.keys()), "Clip names in GT and Output must match!"
+    # Prepare corpus lists for global scoring
+    all_refs = [refs[c] for c in clips]
+    all_hyps = [hyps[c] for c in clips]
 
-    # load all the metrics
-    bleu   = evaluate.load("bleu")
-    meteor = evaluate.load("meteor")
-    chrf   = evaluate.load("chrf")
-    rouge  = evaluate.load("rouge")
-    bert   = BERTScorer(lang="en", rescale_with_baseline=True)
+    # 1) corpus BLEU
+    bleu = sacrebleu.corpus_bleu(all_hyps, [all_refs]).score
 
+    # 2) corpus chrF
+    chrf = sacrebleu.corpus_chrf(all_hyps, [all_refs]).score
+
+    # 3) corpus ROUGE-L
+    rouge = sacrebleu.corpus_rouge_l(all_hyps, [all_refs]).score
+
+    # 4) BERTScore (F1)
+    scorer = BERTScorer(lang="en", rescale_with_baseline=True)
+    P, R, F = scorer.score(all_hyps, all_refs)
+    bert_f1 = float(F.mean()) * 100
+
+    # Now per-clip BLEU and ROUGE-L (sentence‐level via sacrebleu)
     table = []
-    agg = {"BLEU":0, "METEOR":0, "chrF":0, "ROUGE-1":0, "ROUGE-L":0, "BERT-F1":0}
-    N = len(clips)
+    for clip, ref, hyp in zip(clips, all_refs, all_hyps):
+        sb = sacrebleu.sentence_bleu(hyp, [ref]).score
+        sr = sacrebleu.sentence_rouge_l(hyp, [ref]).score
+        table.append([clip, f"{sb:5.1f}", f"{sr:5.1f}"])
 
-    for clip in clips:
-        ref = refs[clip]
-        hyp = hyps[clip]
-
-        b = bleu.compute(predictions=[hyp], references=[[ref]])["bleu"] * 100
-        m = meteor.compute(predictions=[hyp], references=[[ref]])["meteor"] * 100
-        c = chrf.compute(predictions=[hyp], references=[[ref]])["f1"] * 100
-
-        r = rouge.compute(
-            predictions=[hyp],
-            references=[ref],
-            rouge_types=["rouge1","rougeL"],
-            use_stemmer=False
-        )
-        r1 = r["rouge1"] * 100
-        rl = r["rougeL"] * 100
-
-        P, R, F = bert.score([hyp], [ref])
-        bf = float(F[0]) * 100
-
-        agg["BLEU"]   += b
-        agg["METEOR"] += m
-        agg["chrF"]   += c
-        agg["ROUGE-1"]+= r1
-        agg["ROUGE-L"]+= rl
-        agg["BERT-F1"]+= bf
-
-        table.append([
-            clip,
-            f"{b:5.1f}",
-            f"{m:5.1f}",
-            f"{c:5.1f}",
-            f"{r1:5.1f}",
-            f"{rl:5.1f}",
-            f"{bf:5.1f}",
-        ])
-
-    # add averages row
+    # Add overall row
     table.append([
         "AVERAGE",
-        f"{(agg['BLEU']/N):5.1f}",
-        f"{(agg['METEOR']/N):5.1f}",
-        f"{(agg['chrF']/N):5.1f}",
-        f"{(agg['ROUGE-1']/N):5.1f}",
-        f"{(agg['ROUGE-L']/N):5.1f}",
-        f"{(agg['BERT-F1']/N):5.1f}",
+        f"{bleu:5.1f}",
+        f"{rouge:5.1f}",
     ])
 
-    headers = ["Clip", "BLEU", "METEOR", "chrF", "ROUGE-1", "ROUGE-L", "BERT-F1"]
-    print(tabulate(table, headers, tablefmt="github"))
+    print("\nPer-clip BLEU & ROUGE-L (sentence level)\n")
+    print(tabulate(table, headers=["Clip","BLEU","ROUGE-L"], tablefmt="github"))
+
+    print("\nCorpus-level metrics\n")
+    print(f" BLEU-4    = {bleu:5.1f}")
+    print(f" chrF      = {chrf:5.1f}")
+    print(f" ROUGE-L   = {rouge:5.1f}")
+    print(f" BERTScore = {bert_f1:5.1f}")
 
 if __name__ == "__main__":
     main()
