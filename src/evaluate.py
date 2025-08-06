@@ -1,35 +1,38 @@
-import sys, re
+# src/evaluate.py
+import sys
+import re
 from pathlib import Path
 
+import nltk
 import sacrebleu
-from sacrebleu.metrics import BLEU, CHRF, ROUGE
-from bert_score import BERTScorer
+from rouge_score import rouge_scorer
+from bert_score import score as bert_score
+from nltk.translate.meteor_score import single_meteor_score
 from tabulate import tabulate
 
+nltk.download("wordnet", quiet=True)
+nltk.download("punkt", quiet=True)
+nltk.download("omw-1.4", quiet=True)
 
-def load_clips(path):
+
+def read_clips(path: Path):
     """
-    Parse:
-      Clip 2
-      text...
-      Clip 3
-      text...
-    into { "Clip 2": "text...", ... }
+    Reads a file with blocks:
+      Clip N
+      <some text>
+
+      Clip M
+      <some text>
+    Returns dict[clip_name] = text
     """
-    lines = Path(path).read_text().splitlines()
-    clips, cur, buf = {}, None, []
-    for ln in lines:
-        ln = ln.strip()
-        if not ln:
-            continue
-        if re.match(r"^Clip\s+\d+", ln):
-            if cur:
-                clips[cur] = " ".join(buf).strip()
-            cur, buf = ln, []
-        elif cur:
-            buf.append(ln)
-    if cur:
-        clips[cur] = " ".join(buf).strip()
+    text = path.read_text(encoding="utf-8")
+    parts = re.split(r"^(Clip\s+\d+)\s*$", text, flags=re.MULTILINE)
+    # parts = ["", "Clip 2", "ref text", "Clip 3", "ref text", ...]
+    clips = {}
+    for i in range(1, len(parts), 2):
+        name = parts[i].strip()
+        val  = parts[i+1].strip().replace("\n", " ")
+        clips[name] = val
     return clips
 
 
@@ -38,61 +41,63 @@ def main():
         print("Usage: python -m src.evaluate Ground_Truth.txt Output.txt")
         sys.exit(1)
 
-    ref_clips = load_clips(sys.argv[1])
-    hyp_clips = load_clips(sys.argv[2])
+    ref_file, out_file = Path(sys.argv[1]), Path(sys.argv[2])
+    refs = read_clips(ref_file)
+    hyps = read_clips(out_file)
 
-    # sort by clip number
-    clips = sorted(ref_clips, key=lambda c: int(c.split()[1]))
-    assert set(clips) == set(hyp_clips), "Clip mismatch!"
+    assert set(refs) == set(hyps), "Mismatch in clip names between reference and output!"
 
-    refs = [ref_clips[c] for c in clips]
-    hyps = [hyp_clips[c] for c in clips]
+    # initialize scorers
+    bleu_scorer = sacrebleu.metrics.BLEU()
+    chrf_scorer = sacrebleu.metrics.CHRF()
+    rouge_s = rouge_scorer.RougeScorer(["rouge1", "rougeL"], use_stemmer=True)
 
-    # --- Corpus-level metrics ---
-    # BLEU-4
-    bleu_metric = BLEU(effective_order=True)
-    bleu_score = bleu_metric.corpus_score(hyps, [refs]).score
-
-    # chrF
-    chrf_metric = CHRF()
-    chrf_score = chrf_metric.corpus_score(hyps, [refs]).score
-
-    # ROUGE-L
-    rouge_metric = ROUGE()
-    rouge_score = rouge_metric.corpus_score(hyps, [refs]).score
-
-    # BERTScore-F1
-    bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-    P, R, F = bert_scorer.score(hyps, refs)
-    bert_score = float(F.mean()) * 100
-
-    # --- Per-clip sentence BLEU & ROUGE-L ---
     table = []
-    for clip, r, h in zip(clips, refs, hyps):
-        sb = sacrebleu.sentence_bleu(h, [r]).score
-        sr = rouge_metric.sentence_score(h, [r]).score  # sentence ROUGE-L
-        table.append([clip, f"{sb:5.1f}", f"{sr:5.1f}"])
+    for clip in sorted(refs.keys(), key=lambda c: int(re.search(r"\d+", c).group())):
+        ref = refs[clip]
+        hyp = hyps[clip]
 
-    # append averages row
-    table.append([
-        "AVERAGE",
-        f"{bleu_score:5.1f}",
-        f"{rouge_score:5.1f}"
-    ])
+        # BLEU
+        bleu = bleu_scorer.corpus_score([hyp], [[ref]]).score
 
-    # --- Print ---
-    print("\nPer-clip sentence metrics")
+        # chrF
+        chrf = chrf_scorer.corpus_score([hyp], [[ref]]).score
+
+        # ROUGE-1 & ROUGE-L F1
+        scores = rouge_s.score(ref, hyp)
+        r1_f = scores["rouge1"].fmeasure * 100
+        rl_f = scores["rougeL"].fmeasure * 100
+
+        # METEOR
+        meteor = single_meteor_score(ref, hyp) * 100
+
+        # BERTScore F1
+        P, R, F1 = bert_score([hyp], [ref], lang="en", rescale_with_baseline=True)
+        bert_f = F1[0].item() * 100
+
+        table.append([
+            clip,
+            f"{bleu:5.1f}",
+            f"{meteor:5.1f}",
+            f"{chrf:5.1f}",
+            f"{r1_f:6.1f}",
+            f"{rl_f:6.1f}",
+            f"{bert_f:5.1f}"
+        ])
+
+    # average row
+    cols = list(zip(*table))
+    avg = ["AVERAGE"] + [
+        f"{sum(float(x) for x in col)/len(col):5.1f}"
+        for col in cols[1:]
+    ]
+    table.append(avg)
+
     print(tabulate(
         table,
-        headers=["Clip", "BLEU", "ROUGE-L"],
+        headers=["Clip", "BLEU", "METEOR", "chrF", "ROUGE-1", "ROUGE-L", "BERT-F1"],
         tablefmt="github"
     ))
-
-    print("\nCorpus-level metrics")
-    print(f" BLEU-4    = {bleu_score:5.1f}")
-    print(f" chrF      = {chrf_score:5.1f}")
-    print(f" ROUGE-L   = {rouge_score:5.1f}")
-    print(f" BERTScore = {bert_score:5.1f}\n")
 
 
 if __name__ == "__main__":
