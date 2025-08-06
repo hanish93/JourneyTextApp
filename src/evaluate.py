@@ -1,88 +1,99 @@
-import sys
-import re
+import sys, re
 from pathlib import Path
 
 import sacrebleu
+from sacrebleu.metrics import BLEU, CHRF, ROUGE
 from bert_score import BERTScorer
 from tabulate import tabulate
 
+
 def load_clips(path):
     """
-    Read a file with lines like:
+    Parse:
       Clip 2
-      The … text
+      text...
       Clip 3
-      Another text
-    Returns: dict { "Clip 2": "The … text", … }
+      text...
+    into { "Clip 2": "text...", ... }
     """
-    text = Path(path).read_text().splitlines()
-    clips = {}
-    key, buf = None, []
-    for ln in text:
+    lines = Path(path).read_text().splitlines()
+    clips, cur, buf = {}, None, []
+    for ln in lines:
         ln = ln.strip()
         if not ln:
             continue
         if re.match(r"^Clip\s+\d+", ln):
-            if key:
-                clips[key] = " ".join(buf).strip()
-            key = ln
-            buf = []
-        elif key:
+            if cur:
+                clips[cur] = " ".join(buf).strip()
+            cur, buf = ln, []
+        elif cur:
             buf.append(ln)
-    if key:
-        clips[key] = " ".join(buf).strip()
+    if cur:
+        clips[cur] = " ".join(buf).strip()
     return clips
+
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python3 -m src.evaluate Ground_Truth.txt Output.txt")
+        print("Usage: python -m src.evaluate Ground_Truth.txt Output.txt")
         sys.exit(1)
 
-    refs = load_clips(sys.argv[1])
-    hyps = load_clips(sys.argv[2])
-    clips = sorted(refs.keys(), key=lambda x: int(x.split()[1]))
-    assert set(clips) == set(hyps.keys()), "Mismatch in clip IDs!"
+    ref_clips = load_clips(sys.argv[1])
+    hyp_clips = load_clips(sys.argv[2])
 
-    # Prepare corpus lists for global scoring
-    all_refs = [refs[c] for c in clips]
-    all_hyps = [hyps[c] for c in clips]
+    # sort by clip number
+    clips = sorted(ref_clips, key=lambda c: int(c.split()[1]))
+    assert set(clips) == set(hyp_clips), "Clip mismatch!"
 
-    # 1) corpus BLEU
-    bleu = sacrebleu.corpus_bleu(all_hyps, [all_refs]).score
+    refs = [ref_clips[c] for c in clips]
+    hyps = [hyp_clips[c] for c in clips]
 
-    # 2) corpus chrF
-    chrf = sacrebleu.corpus_chrf(all_hyps, [all_refs]).score
+    # --- Corpus-level metrics ---
+    # BLEU-4
+    bleu_metric = BLEU(effective_order=True)
+    bleu_score = bleu_metric.corpus_score(hyps, [refs]).score
 
-    # 3) corpus ROUGE-L
-    rouge = sacrebleu.corpus_rouge_l(all_hyps, [all_refs]).score
+    # chrF
+    chrf_metric = CHRF()
+    chrf_score = chrf_metric.corpus_score(hyps, [refs]).score
 
-    # 4) BERTScore (F1)
-    scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-    P, R, F = scorer.score(all_hyps, all_refs)
-    bert_f1 = float(F.mean()) * 100
+    # ROUGE-L
+    rouge_metric = ROUGE()
+    rouge_score = rouge_metric.corpus_score(hyps, [refs]).score
 
-    # Now per-clip BLEU and ROUGE-L (sentence‐level via sacrebleu)
+    # BERTScore-F1
+    bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
+    P, R, F = bert_scorer.score(hyps, refs)
+    bert_score = float(F.mean()) * 100
+
+    # --- Per-clip sentence BLEU & ROUGE-L ---
     table = []
-    for clip, ref, hyp in zip(clips, all_refs, all_hyps):
-        sb = sacrebleu.sentence_bleu(hyp, [ref]).score
-        sr = sacrebleu.sentence_rouge_l(hyp, [ref]).score
+    for clip, r, h in zip(clips, refs, hyps):
+        sb = sacrebleu.sentence_bleu(h, [r]).score
+        sr = rouge_metric.sentence_score(h, [r]).score  # sentence ROUGE-L
         table.append([clip, f"{sb:5.1f}", f"{sr:5.1f}"])
 
-    # Add overall row
+    # append averages row
     table.append([
         "AVERAGE",
-        f"{bleu:5.1f}",
-        f"{rouge:5.1f}",
+        f"{bleu_score:5.1f}",
+        f"{rouge_score:5.1f}"
     ])
 
-    print("\nPer-clip BLEU & ROUGE-L (sentence level)\n")
-    print(tabulate(table, headers=["Clip","BLEU","ROUGE-L"], tablefmt="github"))
+    # --- Print ---
+    print("\nPer-clip sentence metrics")
+    print(tabulate(
+        table,
+        headers=["Clip", "BLEU", "ROUGE-L"],
+        tablefmt="github"
+    ))
 
-    print("\nCorpus-level metrics\n")
-    print(f" BLEU-4    = {bleu:5.1f}")
-    print(f" chrF      = {chrf:5.1f}")
-    print(f" ROUGE-L   = {rouge:5.1f}")
-    print(f" BERTScore = {bert_f1:5.1f}")
+    print("\nCorpus-level metrics")
+    print(f" BLEU-4    = {bleu_score:5.1f}")
+    print(f" chrF      = {chrf_score:5.1f}")
+    print(f" ROUGE-L   = {rouge_score:5.1f}")
+    print(f" BERTScore = {bert_score:5.1f}\n")
+
 
 if __name__ == "__main__":
     main()
